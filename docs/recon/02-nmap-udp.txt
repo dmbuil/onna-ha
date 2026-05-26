@@ -1,0 +1,10 @@
+# Nmap 7.92 scan initiated Wed May 27 01:09:20 2026 as: nmap -sU -p 1883,5683,8883 -oN /Users/dmbuil/Desktop/onna-ba/docs/recon/02-nmap-udp.txt 192.168.10.3
+Nmap scan report for 192.168.10.3
+Host is up (0.014s latency).
+
+PORT     STATE  SERVICE
+1883/udp closed ibm-mqisdp
+5683/udp closed coap
+8883/udp closed secure-mqtt
+
+# Nmap done at Wed May 27 01:09:33 2026 -- 1 IP address (1 host up) scanned in 13.11 seconds
