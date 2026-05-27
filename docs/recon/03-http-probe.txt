@@ -1,0 +1,59 @@
+=== Port 4001 - Root ===
+*   Trying 192.168.10.3:4001...
+* Connected to 192.168.10.3 (192.168.10.3) port 4001
+> GET / HTTP/1.1
+> Host: 192.168.10.3:4001
+> User-Agent: curl/8.7.1
+> Accept: */*
+> 
+* Request completely sent off
+* Operation timed out after 8002 milliseconds with 0 bytes received
+* Closing connection
+
+=== Port 4001 - /api/ ===
+*   Trying 192.168.10.3:4001...
+* Connected to 192.168.10.3 (192.168.10.3) port 4001
+> GET /api/ HTTP/1.1
+> Host: 192.168.10.3:4001
+> User-Agent: curl/8.7.1
+> Accept: */*
+> 
+* Request completely sent off
+* Operation timed out after 8004 milliseconds with 0 bytes received
+* Closing connection
+
+=== Port 4001 - /api/v1/ ===
+*   Trying 192.168.10.3:4001...
+* Connected to 192.168.10.3 (192.168.10.3) port 4001
+> GET /api/v1/ HTTP/1.1
+> Host: 192.168.10.3:4001
+> User-Agent: curl/8.7.1
+> Accept: */*
+> 
+* Request completely sent off
+* Operation timed out after 8006 milliseconds with 0 bytes received
+* Closing connection
+
+=== Port 4001 - /status ===
+*   Trying 192.168.10.3:4001...
+* Connected to 192.168.10.3 (192.168.10.3) port 4001
+> GET /status HTTP/1.1
+> Host: 192.168.10.3:4001
+> User-Agent: curl/8.7.1
+> Accept: */*
+> 
+* Request completely sent off
+* Operation timed out after 8002 milliseconds with 0 bytes received
+* Closing connection
+
+=== Port 4001 - /devices ===
+*   Trying 192.168.10.3:4001...
+* Connected to 192.168.10.3 (192.168.10.3) port 4001
+> GET /devices HTTP/1.1
+> Host: 192.168.10.3:4001
+> User-Agent: curl/8.7.1
+> Accept: */*
+> 
+* Request completely sent off
+* Operation timed out after 8004 milliseconds with 0 bytes received
+* Closing connection
