@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Onna — setup",
+        "data": {
+          "host": "IP address",
+          "onna_id": "Onna ID"
+        },
+        "data_description": {
+          "host": "Local IP address of the Onna device (e.g. 192.168.1.10).",
+          "onna_id": "Device identifier, visible in the Onna app under Settings → Device info."
+        }
+      }
+    },
+    "error": {
+      "invalid_host": "IP address cannot be empty.",
+      "invalid_onna_id": "Onna ID cannot be empty."
+    },
+    "abort": {
+      "already_configured": "Device is already configured."
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "domain": "onna",
+  "name": "Onna",
+  "version": "0.1.0",
+  "config_flow": true,
+  "documentation": "https://github.com/dmbuil/onna-ba",
+  "requirements": ["python-socketio==4.6.1", "python-engineio==3.14.2", "websockets"],
+  "dependencies": [],
+  "codeowners": [],
+  "iot_class": "local_push"
+}

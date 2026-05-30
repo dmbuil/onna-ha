@@ -1,3 +1,30 @@
-extracted/
+# ── Python environment ────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# ── Reverse-engineered / binary artifacts ────────────────────────────────
+# IPA (iOS app), knxprod (KNX product definition), Windows installer
+*.ipa
+*.knxprod
 *.exe
+# Extracted contents of the above (app sources, IPA Payload, asar, …)
+extracted/
+
+# ── Sensitive Onna device config ─────────────────────────────────────────
+# Contains communityId, communityPassword, alarm code, and all KNX addresses
+out.onna.txt
+# Full READ_CONFIGURATION response — same credentials as out.onna.txt
 docs/recon/04-read-configuration.json
+
+# ── Claude Code local settings ───────────────────────────────────────────
+# Machine-specific allowed-commands list; contains LAN IPs and SSH password
+.claude/
+
+# ── Internal AI planning / session docs ──────────────────────────────────
+docs/superpowers/
+
+# ── macOS ─────────────────────────────────────────────────────────────────
+.DS_Store
