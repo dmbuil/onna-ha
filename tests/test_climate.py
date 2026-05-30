@@ -625,3 +625,184 @@ def test_general_handle_winter_updates_action():
     general.async_write_ha_state = MagicMock()
     general._handle_winter(False)
     assert general.hvac_action == HVACAction.COOLING
+
+
+# ---------------------------------------------------------------------------
+# Window open / close — thermostat pause
+# ---------------------------------------------------------------------------
+
+def _make_zone_with_window(data=None):
+    coord = _make_coordinator(data)
+    return OnnaClimate(
+        coord, "Dorm. 2",
+        "1_2_4", "1_2_3", "1_2_2",
+        "1_2_1", "1_2_0", "1_2_7",
+        window_sensor_entity_id="binary_sensor.window_dorm_2",
+    )
+
+
+def test_window_initial_state_false():
+    zone = _make_zone_with_window()
+    assert zone._window_open is False
+    assert zone._window_pause_active is False
+
+
+def test_extra_attrs_expose_window_state():
+    zone = _make_zone_with_window()
+    attrs = zone.extra_state_attributes
+    assert attrs["window_open"] is False
+    assert attrs["window_pause_active"] is False
+
+
+def test_window_change_open_starts_timer():
+    zone = _make_zone_with_window()
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+
+    with patch("custom_components.onna.climate.async_call_later") as mock_timer:
+        event = MagicMock()
+        event.data = {"new_state": MagicMock(state="on")}
+        zone._handle_window_change(event)
+
+    assert zone._window_open is True
+    mock_timer.assert_called_once_with(zone.hass, 60, zone._handle_window_delay_elapsed)
+
+
+def test_window_change_close_cancels_timer():
+    zone = _make_zone_with_window()
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    cancel_mock = MagicMock()
+    zone._window_open = True
+    zone._window_cancel_timer = cancel_mock
+
+    event = MagicMock()
+    event.data = {"new_state": MagicMock(state="off")}
+    zone._handle_window_change(event)
+
+    cancel_mock.assert_called_once()
+    assert zone._window_cancel_timer is None
+
+
+def test_window_delay_elapsed_pauses_when_on():
+    zone = _make_zone_with_window({"1_2_1": True})
+    zone._is_on = True
+    zone._window_open = True
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+
+    zone._handle_window_delay_elapsed(None)
+
+    assert zone._window_pause_active is True
+    zone.hass.async_create_task.assert_called_once()
+
+
+def test_window_delay_elapsed_noop_when_already_off():
+    zone = _make_zone_with_window()
+    zone._is_on = False
+    zone._window_open = True
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+
+    zone._handle_window_delay_elapsed(None)
+
+    assert zone._window_pause_active is False
+    zone.hass.async_create_task.assert_not_called()
+
+
+def test_window_close_resumes_when_pause_active():
+    zone = _make_zone_with_window()
+    zone._window_open = True
+    zone._window_pause_active = True
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+
+    event = MagicMock()
+    event.data = {"new_state": MagicMock(state="off")}
+    zone._handle_window_change(event)
+
+    assert zone._window_pause_active is False
+    zone.hass.async_create_task.assert_called_once()  # turn ON
+
+
+def test_window_close_no_resume_when_pause_not_active():
+    zone = _make_zone_with_window()
+    zone._window_open = True
+    zone._window_pause_active = False
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+
+    event = MagicMock()
+    event.data = {"new_state": MagicMock(state="off")}
+    zone._handle_window_change(event)
+
+    zone.hass.async_create_task.assert_not_called()
+
+
+def test_window_spurious_open_close_cancels_before_delay():
+    """Window opens then closes within 1 min — no pause should occur."""
+    zone = _make_zone_with_window()
+    zone._is_on = True
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    cancel_mock = MagicMock()
+
+    with patch("custom_components.onna.climate.async_call_later", return_value=cancel_mock):
+        open_event = MagicMock()
+        open_event.data = {"new_state": MagicMock(state="on")}
+        zone._handle_window_change(open_event)
+
+    close_event = MagicMock()
+    close_event.data = {"new_state": MagicMock(state="off")}
+    zone._handle_window_change(close_event)
+
+    cancel_mock.assert_called_once()        # timer was cancelled
+    assert zone._window_pause_active is False  # no pause triggered
+
+
+@pytest.mark.anyio
+async def test_turn_on_clears_window_pause():
+    zone = _make_zone_with_window()
+    zone._window_pause_active = True
+    await zone.async_turn_on()
+    assert zone._window_pause_active is False
+
+
+@pytest.mark.anyio
+async def test_turn_off_clears_window_pause():
+    zone = _make_zone_with_window()
+    zone._window_pause_active = True
+    await zone.async_turn_off()
+    assert zone._window_pause_active is False
+
+
+@pytest.mark.anyio
+async def test_async_added_subscribes_to_window_sensor():
+    zone = _make_zone_with_window()
+    zone.hass = MagicMock()
+    zone.hass.states.get.return_value = MagicMock(state="off")
+    zone.async_on_remove = MagicMock()
+    with patch("custom_components.onna.climate.async_track_state_change_event",
+               return_value=lambda: None) as mock_track:
+        with patch("custom_components.onna.climate.async_dispatcher_connect",
+                   return_value=lambda: None):
+            await zone.async_added_to_hass()
+    calls = [c.args[1] for c in mock_track.call_args_list]
+    assert "binary_sensor.window_dorm_2" in calls
+
+
+@pytest.mark.anyio
+async def test_async_added_seeds_window_open_state():
+    zone = _make_zone_with_window()
+    zone.hass = MagicMock()
+    # Window is currently open
+    zone.hass.states.get.side_effect = lambda eid: (
+        MagicMock(state="on") if eid == "binary_sensor.window_dorm_2" else None
+    )
+    zone.async_on_remove = MagicMock()
+    with patch("custom_components.onna.climate.async_track_state_change_event",
+               return_value=lambda: None):
+        with patch("custom_components.onna.climate.async_dispatcher_connect",
+                   return_value=lambda: None):
+            await zone.async_added_to_hass()
+    assert zone._window_open is True

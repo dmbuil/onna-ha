@@ -11,6 +11,26 @@ Two entity types are created:
                        setpoint and ON/OFF to the whole installation (addresses 0_0_1/2/3).
                        It has no current-temperature sensor and no read-back; state is local.
 
+--- Window open detection and thermostat pause ---
+
+To save energy, a zone thermostat can be automatically paused when its window
+is opened.  Configure a HA binary_sensor (e.g. a door/window sensor that
+reports "on" when open) per zone in CLIMATE_WINDOW_SENSOR in const.py.
+
+Behaviour:
+  • Window opens  → a 60-second debounce timer starts.  If the window is
+                    closed again before the timer fires, nothing happens.
+  • Timer fires   → if the zone is ON, it is turned off and
+                    _window_pause_active is set.  If the zone was already
+                    OFF, no action is taken.
+  • Window closes → the timer (if still pending) is cancelled; if the pause
+                    was active the zone is immediately turned back ON.
+  • User overrides (async_turn_on/off from HA or an automation) always clear
+                    the pause flag so the window close does not fight the user.
+
+The current window state and pause flag are exposed as extra_state_attributes
+(window_open, window_pause_active) for use in Lovelace cards or automations.
+
 --- External sensor override and setpoint compensation ---
 
 Onna's built-in probes are mounted inside the KNX thermostat housings, which can read
@@ -57,13 +77,14 @@ from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import CLIMATE_ADDRESSES, CLIMATE_TEMP_OVERRIDE, DOMAIN
+from .const import CLIMATE_ADDRESSES, CLIMATE_TEMP_OVERRIDE, CLIMATE_WINDOW_SENSOR, DOMAIN
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
 
-_WINTER_ADDR        = "0_0_7"
+_WINTER_ADDR         = "0_0_7"
+_WINDOW_OPEN_DELAY   = 60  # seconds before a sustained open window pauses the thermostat
 _GENERAL_SETPOINT_W = "0_0_2"
 _GENERAL_ONOFF_W    = "0_0_1"
 _GENERAL_MODE_W     = "0_0_3"  # Modo Invierno/Verano General write (1=winter/heat, 0=summer/cool)
@@ -89,6 +110,7 @@ async def async_setup_entry(
             temp_addr, setpoint_r, setpoint_w,
             onoff_r, onoff_w, demand_addr,
             external_temp_entity_id=CLIMATE_TEMP_OVERRIDE.get(zone_id),
+            window_sensor_entity_id=CLIMATE_WINDOW_SENSOR.get(zone_id),
         ))
 
     coordinator.register_address(_WINTER_ADDR)
@@ -129,6 +151,7 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
         onoff_w_addr: str,
         demand_addr: str,
         external_temp_entity_id: str | None = None,
+        window_sensor_entity_id: str | None = None,
     ) -> None:
         self._coordinator    = coordinator
         self._attr_name      = name
@@ -153,6 +176,16 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
         self._is_on: bool  = bool(data.get(onoff_r_addr, False))
         self._demand: bool = bool(data.get(demand_addr, False))
         self._winter: bool = bool(data.get(_WINTER_ADDR, True))
+        # Optional HA entity ID of a window/door binary sensor for this zone.
+        # When the sensor reports "on" (open) for longer than _WINDOW_OPEN_DELAY seconds,
+        # the thermostat is paused.  It resumes automatically when the window closes.
+        # To add a zone, add an entry to CLIMATE_WINDOW_SENSOR in const.py.
+        self._window_sensor         = window_sensor_entity_id
+        self._window_open: bool     = False
+        self._window_pause_active: bool = False
+        # Cancellation handle returned by async_call_later; None when no timer is pending.
+        self._window_cancel_timer: Any  = None
+
         # Last setpoint actually written to the Onna KNX bus.  When compensation is active this
         # differs from _target_temp (the user's intent).  Persisted via extra_state_attributes so
         # that after an HA restart we can recognise the stale Onna echo and not overwrite the
@@ -232,9 +265,11 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
             await self._push_compensated_setpoint()
 
     async def async_turn_on(self) -> None:
+        self._window_pause_active = False  # user override — window close won't re-pause
         await self._coordinator.client.async_set_address_value(self._onoff_w, 1)
 
     async def async_turn_off(self) -> None:
+        self._window_pause_active = False  # explicit OFF — window close won't auto-resume
         await self._coordinator.client.async_set_address_value(self._onoff_w, 0)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
@@ -277,6 +312,22 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
                 )
             )
 
+        if self._window_sensor:
+            # Seed from current window state
+            state = self.hass.states.get(self._window_sensor)
+            if state and state.state not in ("unavailable", "unknown"):
+                self._window_open = state.state == "on"
+            # Subscribe to future window state changes
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass,
+                    self._window_sensor,
+                    self._handle_window_change,
+                )
+            )
+            # Cancel any pending timer when the entity is removed
+            self.async_on_remove(self._cancel_window_timer)
+
     def _subscriptions(self) -> list[tuple[str, Any]]:
         return [
             (self._temp_addr,   self._handle_temp),
@@ -296,9 +347,13 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
 
     @property
     def extra_state_attributes(self) -> dict | None:
+        attrs: dict = {}
         if self._external_temp and self._last_written_setpoint is not None:
-            return {"_onna_compensated_setpoint": self._last_written_setpoint}
-        return None
+            attrs["_onna_compensated_setpoint"] = self._last_written_setpoint
+        if self._window_sensor:
+            attrs["window_open"] = self._window_open
+            attrs["window_pause_active"] = self._window_pause_active
+        return attrs or None
 
     @callback
     def _handle_setpoint(self, value: Any) -> None:
@@ -347,6 +402,51 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
         # External temp shifted → offset changed → re-push compensated setpoint.
         if self._ext_available and self._target_temp is not None:
             self.hass.async_create_task(self._push_compensated_setpoint())
+
+    # --- Window open / close handling ---
+
+    @callback
+    def _cancel_window_timer(self) -> None:
+        if self._window_cancel_timer is not None:
+            self._window_cancel_timer()
+            self._window_cancel_timer = None
+
+    @callback
+    def _handle_window_change(self, event: Any) -> None:
+        new_state = event.data.get("new_state")
+        if new_state is None or new_state.state in ("unavailable", "unknown"):
+            return
+        is_open = new_state.state == "on"
+        if is_open == self._window_open:
+            return
+        self._window_open = is_open
+        self.async_write_ha_state()
+
+        if is_open:
+            # Start debounce timer — only pause after a sustained open.
+            self._window_cancel_timer = async_call_later(
+                self.hass, _WINDOW_OPEN_DELAY, self._handle_window_delay_elapsed
+            )
+        else:
+            # Window closed — cancel any pending timer.
+            self._cancel_window_timer()
+            if self._window_pause_active:
+                self._window_pause_active = False
+                self.hass.async_create_task(
+                    self._coordinator.client.async_set_address_value(self._onoff_w, 1)
+                )
+                self.async_write_ha_state()
+
+    @callback
+    def _handle_window_delay_elapsed(self, _now: Any) -> None:
+        self._window_cancel_timer = None
+        # Only pause if the zone is currently on; already-off zones need no action.
+        if self._window_open and self._is_on:
+            self._window_pause_active = True
+            self.hass.async_create_task(
+                self._coordinator.client.async_set_address_value(self._onoff_w, 0)
+            )
+            self.async_write_ha_state()
 
 
 # ---------------------------------------------------------------------------

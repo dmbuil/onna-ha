@@ -113,6 +113,21 @@ CLIMATE_TEMP_OVERRIDE: dict[str, str] = {
     # "zone_4": "sensor.your_sensor_entity_id",  # Dorm. 4 — add if needed
 }
 
+# Window sensor overrides per zone.
+# When a sensor reports "on" (open) for longer than _WINDOW_OPEN_DELAY seconds (60 s),
+# the zone thermostat is automatically turned off to save energy.  It resumes as soon
+# as the window is closed again.  Zones that were already OFF are unaffected.
+#
+# Use HA binary_sensor entity_ids (door/window contact sensors, etc.).
+# To add a new zone, add an entry below using the zone_X key from CLIMATE_ADDRESSES.
+CLIMATE_WINDOW_SENSOR: dict[str, str] = {
+    "zone_0": "binary_sensor.0xa4c138f41f68d504_contact",   # Salón+Cocina
+    "zone_1": "binary_sensor.0xa4c13897e98a6881_contact",   # Dorm. Principal
+    # "zone_2": "binary_sensor.window_dorm_2",
+    # "zone_3": "binary_sensor.window_dorm_3",
+    # "zone_4": "binary_sensor.window_dorm_4",
+}
+
 # Fan entities: id → (name, valve_address, speed_address)
 FAN_ADDRESSES = {
     "fancoil_salon": ("Fancoil Salón", "1_7_1", "1_7_3"),

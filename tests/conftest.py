@@ -73,6 +73,7 @@ disp_mod.async_dispatcher_connect = MagicMock()
 disp_mod.async_dispatcher_send = MagicMock()
 event_mod = _make_module("homeassistant.helpers.event")
 event_mod.async_track_state_change_event = MagicMock(return_value=lambda: None)
+event_mod.async_call_later = MagicMock(return_value=MagicMock())  # returns a cancel handle
 ep_mod = _make_module("homeassistant.helpers.entity_platform")
 ep_mod.AddEntitiesCallback = MagicMock
 restore_mod = _make_module("homeassistant.helpers.restore_state")
