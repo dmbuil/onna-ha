@@ -1,8 +1,8 @@
 """Tests for OnnaValve."""
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from custom_components.onna.valve import OnnaValve
+from custom_components.onna.valve import OnnaPositionValve, OnnaValve
 from custom_components.onna.coordinator import SIGNAL_ADDRESS_UPDATE
 
 
@@ -104,3 +104,80 @@ async def test_async_added_to_hass_connects_dispatcher():
     mock_connect.assert_called_once_with(
         valve.hass, expected_signal, valve._handle_update
     )
+
+
+# RestoreEntity — OnnaValve
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_valve_restore_open():
+    coord = _make_coordinator()
+    valve = OnnaValve(coord, "0_0_6", "Válvulas Colector", "water")
+    valve.hass = MagicMock()
+    valve.async_on_remove = MagicMock()
+    last = MagicMock()
+    last.state = "open"
+    valve.async_get_last_state = AsyncMock(return_value=last)
+    with patch("custom_components.onna.valve.async_dispatcher_connect", return_value=lambda: None):
+        await valve.async_added_to_hass()
+    assert valve.is_closed is False
+
+
+@pytest.mark.anyio
+async def test_valve_restore_closed():
+    coord = _make_coordinator()
+    valve = OnnaValve(coord, "0_0_6", "Válvulas Colector", "water")
+    valve.hass = MagicMock()
+    valve.async_on_remove = MagicMock()
+    last = MagicMock()
+    last.state = "closed"
+    valve.async_get_last_state = AsyncMock(return_value=last)
+    with patch("custom_components.onna.valve.async_dispatcher_connect", return_value=lambda: None):
+        await valve.async_added_to_hass()
+    assert valve.is_closed is True
+
+
+@pytest.mark.anyio
+async def test_valve_restore_skipped_when_unavailable():
+    coord = _make_coordinator({"0_0_6": True})  # open
+    valve = OnnaValve(coord, "0_0_6", "Válvulas Colector", "water")
+    valve.hass = MagicMock()
+    valve.async_on_remove = MagicMock()
+    last = MagicMock()
+    last.state = "unavailable"
+    valve.async_get_last_state = AsyncMock(return_value=last)
+    with patch("custom_components.onna.valve.async_dispatcher_connect", return_value=lambda: None):
+        await valve.async_added_to_hass()
+    assert valve.is_closed is False  # unchanged from coordinator seed
+
+
+# RestoreEntity — OnnaPositionValve
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_position_valve_restore_state_and_position():
+    coord = _make_coordinator()
+    valve = OnnaPositionValve(coord, "1_0_8", "1_0_6", "Salón Demanda Suelo", "water")
+    valve.hass = MagicMock()
+    valve.async_on_remove = MagicMock()
+    last = MagicMock()
+    last.state = "open"
+    last.attributes = {"current_position": 65}
+    valve.async_get_last_state = AsyncMock(return_value=last)
+    with patch("custom_components.onna.valve.async_dispatcher_connect", return_value=lambda: None):
+        await valve.async_added_to_hass()
+    assert valve.is_closed is False
+    assert valve.current_valve_position == 65
+
+
+@pytest.mark.anyio
+async def test_position_valve_restore_skipped_when_no_last_state():
+    coord = _make_coordinator({"1_0_8": 30, "1_0_6": False})
+    valve = OnnaPositionValve(coord, "1_0_8", "1_0_6", "Salón Demanda Suelo", "water")
+    valve.hass = MagicMock()
+    valve.async_on_remove = MagicMock()
+    valve.async_get_last_state = AsyncMock(return_value=None)
+    with patch("custom_components.onna.valve.async_dispatcher_connect", return_value=lambda: None):
+        await valve.async_added_to_hass()
+    assert valve.current_valve_position == 30
+    assert valve.is_closed is True  # unchanged from coordinator seed

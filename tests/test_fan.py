@@ -131,3 +131,65 @@ async def test_async_added_to_hass_connects_both_dispatchers():
     signals = [call.args[1] for call in mock_connect.call_args_list]
     assert SIGNAL_ADDRESS_UPDATE.format(address_id="1_7_1") in signals
     assert SIGNAL_ADDRESS_UPDATE.format(address_id="1_7_3") in signals
+
+
+# RestoreEntity — last known state
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_fan_restore_on_with_percentage():
+    coord = _make_coordinator()
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan.hass = MagicMock()
+    fan.async_on_remove = MagicMock()
+    last = MagicMock()
+    last.state = "on"
+    last.attributes = {"percentage": 75}
+    fan.async_get_last_state = AsyncMock(return_value=last)
+    with patch("custom_components.onna.fan.async_dispatcher_connect", return_value=lambda: None):
+        await fan.async_added_to_hass()
+    assert fan._is_on is True
+    assert fan._percentage == 75
+
+
+@pytest.mark.anyio
+async def test_fan_restore_off():
+    coord = _make_coordinator()
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan.hass = MagicMock()
+    fan.async_on_remove = MagicMock()
+    last = MagicMock()
+    last.state = "off"
+    last.attributes = {}
+    fan.async_get_last_state = AsyncMock(return_value=last)
+    with patch("custom_components.onna.fan.async_dispatcher_connect", return_value=lambda: None):
+        await fan.async_added_to_hass()
+    assert fan._is_on is False
+
+
+@pytest.mark.anyio
+async def test_fan_restore_skipped_when_unavailable():
+    coord = _make_coordinator({"1_7_1": True, "1_7_3": 50})
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan.hass = MagicMock()
+    fan.async_on_remove = MagicMock()
+    last = MagicMock()
+    last.state = "unavailable"
+    last.attributes = {}  # no attributes when unavailable
+    fan.async_get_last_state = AsyncMock(return_value=last)
+    with patch("custom_components.onna.fan.async_dispatcher_connect", return_value=lambda: None):
+        await fan.async_added_to_hass()
+    assert fan._is_on is True   # unchanged from coordinator seed
+    assert fan._percentage == 50
+
+
+@pytest.mark.anyio
+async def test_fan_restore_skipped_when_no_last_state():
+    coord = _make_coordinator()
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan.hass = MagicMock()
+    fan.async_on_remove = MagicMock()
+    fan.async_get_last_state = AsyncMock(return_value=None)
+    with patch("custom_components.onna.fan.async_dispatcher_connect", return_value=lambda: None):
+        await fan.async_added_to_hass()
+    assert fan._is_on is False  # default

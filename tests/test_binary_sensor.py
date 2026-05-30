@@ -109,3 +109,60 @@ async def test_async_added_to_hass_connects_dispatcher():
     mock_connect.assert_called_once_with(
         sensor.hass, expected_signal, sensor._handle_update
     )
+
+
+# RestoreEntity — last known state
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_restore_state_on():
+    coord = _make_coordinator()
+    sensor = OnnaBinarySensor(coord, "0_4_2", "Alarma Inundación", "moisture", False)
+    sensor.hass = MagicMock()
+    sensor.async_on_remove = MagicMock()
+    last = MagicMock()
+    last.state = "on"
+    sensor.async_get_last_state = AsyncMock(return_value=last)
+    with patch("custom_components.onna.binary_sensor.async_dispatcher_connect", return_value=lambda: None):
+        await sensor.async_added_to_hass()
+    assert sensor.is_on is True
+
+
+@pytest.mark.anyio
+async def test_restore_state_off():
+    coord = _make_coordinator()
+    sensor = OnnaBinarySensor(coord, "0_4_2", "Alarma Inundación", "moisture", False)
+    sensor.hass = MagicMock()
+    sensor.async_on_remove = MagicMock()
+    last = MagicMock()
+    last.state = "off"
+    sensor.async_get_last_state = AsyncMock(return_value=last)
+    with patch("custom_components.onna.binary_sensor.async_dispatcher_connect", return_value=lambda: None):
+        await sensor.async_added_to_hass()
+    assert sensor.is_on is False
+
+
+@pytest.mark.anyio
+async def test_restore_skipped_when_unavailable():
+    coord = _make_coordinator({"0_4_2": False})
+    sensor = OnnaBinarySensor(coord, "0_4_2", "Alarma Inundación", "moisture", False)
+    sensor.hass = MagicMock()
+    sensor.async_on_remove = MagicMock()
+    last = MagicMock()
+    last.state = "unavailable"
+    sensor.async_get_last_state = AsyncMock(return_value=last)
+    with patch("custom_components.onna.binary_sensor.async_dispatcher_connect", return_value=lambda: None):
+        await sensor.async_added_to_hass()
+    assert sensor.is_on is False  # unchanged from coordinator seed
+
+
+@pytest.mark.anyio
+async def test_restore_skipped_when_no_last_state():
+    coord = _make_coordinator({"0_4_2": True})
+    sensor = OnnaBinarySensor(coord, "0_4_2", "Alarma Inundación", "moisture", False)
+    sensor.hass = MagicMock()
+    sensor.async_on_remove = MagicMock()
+    sensor.async_get_last_state = AsyncMock(return_value=None)
+    with patch("custom_components.onna.binary_sensor.async_dispatcher_connect", return_value=lambda: None):
+        await sensor.async_added_to_hass()
+    assert sensor.is_on is True  # unchanged from coordinator seed

@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN, BINARY_SENSOR_ADDRESSES
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
@@ -29,7 +30,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class OnnaBinarySensor(BinarySensorEntity):
+class OnnaBinarySensor(BinarySensorEntity, RestoreEntity):
     _attr_has_entity_name = True
     _attr_should_poll = False
 
@@ -65,6 +66,9 @@ class OnnaBinarySensor(BinarySensorEntity):
         }
 
     async def async_added_to_hass(self) -> None:
+        if (last := await self.async_get_last_state()) is not None:
+            if last.state not in ("unavailable", "unknown"):
+                self._attr_is_on = last.state == "on"
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,

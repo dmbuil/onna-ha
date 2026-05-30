@@ -4,8 +4,8 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.sensor import (
+    RestoreSensor,
     SensorDeviceClass,
-    SensorEntity,
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
@@ -30,7 +30,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class OnnaSensor(SensorEntity):
+class OnnaSensor(RestoreSensor):
     _attr_has_entity_name = True
     _attr_should_poll = False
 
@@ -63,6 +63,9 @@ class OnnaSensor(SensorEntity):
         }
 
     async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()  # required for RestoreSensor internals
+        if (last := await self.async_get_last_sensor_data()) is not None:
+            self._attr_native_value = last.native_value
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,

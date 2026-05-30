@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN, VALVE_ADDRESSES, VALVE_POSITION_ADDRESSES
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
@@ -30,7 +31,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class OnnaValve(ValveEntity):
+class OnnaValve(ValveEntity, RestoreEntity):
     _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_reports_position = False
@@ -63,6 +64,9 @@ class OnnaValve(ValveEntity):
         }
 
     async def async_added_to_hass(self) -> None:
+        if (last := await self.async_get_last_state()) is not None:
+            if last.state not in ("unavailable", "unknown"):
+                self._is_open = last.state == "open"
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,
@@ -77,7 +81,7 @@ class OnnaValve(ValveEntity):
         self.async_write_ha_state()
 
 
-class OnnaPositionValve(ValveEntity):
+class OnnaPositionValve(ValveEntity, RestoreEntity):
     _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_reports_position = True
@@ -119,6 +123,11 @@ class OnnaPositionValve(ValveEntity):
         }
 
     async def async_added_to_hass(self) -> None:
+        if (last := await self.async_get_last_state()) is not None:
+            if last.state not in ("unavailable", "unknown"):
+                self._cabezal_open = last.state == "open"
+            if (pos := last.attributes.get("current_position")) is not None:
+                self._position = int(pos)
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,

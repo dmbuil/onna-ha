@@ -132,9 +132,25 @@ class _SensorEntity:
         pass
 
 
+class _SensorExtraStoredData:
+    def __init__(self, native_value, native_unit_of_measurement=None):
+        self.native_value = native_value
+        self.native_unit_of_measurement = native_unit_of_measurement
+
+
+class _RestoreSensor(_SensorEntity, _RestoreEntity):
+    async def async_added_to_hass(self):
+        pass  # no-op in test environment; skips HA store registration
+
+    async def async_get_last_sensor_data(self):
+        return None
+
+
 sensor_mod.SensorDeviceClass = _SensorDeviceClass
 sensor_mod.SensorStateClass = _SensorStateClass
 sensor_mod.SensorEntity = _SensorEntity
+sensor_mod.RestoreSensor = _RestoreSensor
+sensor_mod.SensorExtraStoredData = _SensorExtraStoredData
 
 # ---- homeassistant.components.binary_sensor ----
 bs_mod = _make_module("homeassistant.components.binary_sensor")

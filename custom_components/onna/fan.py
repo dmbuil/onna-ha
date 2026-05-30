@@ -21,6 +21,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN, FAN_ADDRESSES
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
@@ -40,7 +41,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class OnnaFan(FanEntity):
+class OnnaFan(FanEntity, RestoreEntity):
     _attr_should_poll = False
     _attr_supported_features = FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF | FanEntityFeature.SET_SPEED
 
@@ -98,6 +99,11 @@ class OnnaFan(FanEntity):
         """Speed is set automatically by Onna based on demand."""
 
     async def async_added_to_hass(self) -> None:
+        if (last := await self.async_get_last_state()) is not None:
+            if last.state not in ("unavailable", "unknown"):
+                self._is_on = last.state == "on"
+            if (pct := last.attributes.get("percentage")) is not None:
+                self._percentage = int(pct)
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,
