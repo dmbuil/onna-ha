@@ -32,6 +32,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    """Create an OnnaFan entity for every fancoil in FAN_ADDRESSES."""
     coordinator: OnnaCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities = []
     for _, (name, valve_addr, speed_addr) in FAN_ADDRESSES.items():
@@ -42,13 +43,30 @@ async def async_setup_entry(
 
 
 class OnnaFan(FanEntity, RestoreEntity):
+    """Read-only fancoil entity — Onna controls speed and on/off automatically.
+
+    The fancoil (Salón+Cocina) is activated and speed-controlled by Onna's PI
+    algorithm whenever the zone's thermostat demands heating or cooling.  HA
+    cannot meaningfully override this without fighting the controller, so all
+    write methods (turn_on, turn_off, set_percentage) are intentional no-ops.
+
+    TURN_ON, TURN_OFF, and SET_SPEED features are declared so that the HA fan
+    card renders correctly with a toggle and a slider for monitoring purposes.
+
+    To enable/disable the fancoil for the season, use the companion switch
+    entity (address 1_7_10) — Onna respects that flag and zeroes speed when
+    disabled.
+    """
+
     _attr_should_poll = False
     _attr_supported_features = FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF | FanEntityFeature.SET_SPEED
 
     def __init__(self, coordinator: OnnaCoordinator, name: str, valve_address: str, speed_address: str) -> None:
         self._coordinator = coordinator
         self._attr_name = name
+        # valve_address (1_7_1): fancoil on/off state — Onna sets this based on demand.
         self._valve_address = valve_address
+        # speed_address (1_7_3): fancoil speed 0-100 % — Onna's PI output.
         self._speed_address = speed_address
         self._is_on: bool = bool(coordinator.data.get(valve_address, False))
         raw = coordinator.data.get(speed_address)
@@ -81,24 +99,33 @@ class OnnaFan(FanEntity, RestoreEntity):
 
     @callback
     def _handle_valve_update(self, value: Any) -> None:
+        """Accept a fancoil on/off push from Onna and refresh state."""
         self._is_on = bool(value)
         self.async_write_ha_state()
 
     @callback
     def _handle_speed_update(self, value: Any) -> None:
+        """Accept a fancoil speed push from Onna and refresh state."""
         self._percentage = int(value) if value is not None else None
         self.async_write_ha_state()
 
     async def async_turn_on(self, percentage=None, preset_mode=None, **kwargs) -> None:
-        """Fancoil is controlled automatically by Onna — enable via the switch entity."""
+        """No-op — fancoil is controlled automatically by Onna.
+
+        To enable the fancoil, use the 'Fancoil Salón Habilitado' switch entity.
+        """
 
     async def async_turn_off(self, **kwargs) -> None:
-        """Fancoil is controlled automatically by Onna — disable via the switch entity."""
+        """No-op — fancoil is controlled automatically by Onna.
+
+        To disable the fancoil, use the 'Fancoil Salón Habilitado' switch entity.
+        """
 
     async def async_set_percentage(self, percentage: int) -> None:
-        """Speed is set automatically by Onna based on demand."""
+        """No-op — speed is set automatically by Onna's PI algorithm based on demand."""
 
     async def async_added_to_hass(self) -> None:
+        """Restore last known state and subscribe to valve and speed dispatcher signals."""
         if (last := await self.async_get_last_state()) is not None:
             if last.state not in ("unavailable", "unknown"):
                 self._is_on = last.state == "on"

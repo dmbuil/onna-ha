@@ -1,4 +1,21 @@
-"""Constants for the Onna integration."""
+"""Constants for the Onna integration.
+
+KNX address naming convention used in this file
+-------------------------------------------------
+Addresses follow the pattern ``<area>_<line>_<device>`` where the three
+numbers map to Onna's internal KNX topology:
+
+  area 0 — installation-wide (electrical, water meters, alarms, global mode)
+  area 1 — per-zone heating/cooling (zone index = line, 0=Salón … 4=Dorm.4)
+  zone X (line 0–4) addresses:
+    1_X_0  write ON/OFF (actuate)       1_X_1  read ON/OFF state
+    1_X_2  write setpoint               1_X_3  read setpoint state
+    1_X_4  real temperature (probe)     1_X_6  cabezal actuator state
+    1_X_7  heating/cooling demand       1_X_8  PI demand 0–100 %
+
+All values on the wire are plain Python numbers (int or float).  Boolean KNX
+DPT 1.001 addresses arrive and are sent as 1/0 integers.
+"""
 DOMAIN = "onna"
 
 CONF_HOST    = "host"
@@ -54,9 +71,10 @@ VALVE_ADDRESSES = {
     "0_0_6": ("Válvulas Colector",  "water"),
 }
 
-# Valve entities with position: position_addr → (name, device_class, cabezal_addr)
-# position_addr (1_X_8): Demanda Suelo PI, DPT 5.001, 0-100% → current_valve_position
-# cabezal_addr  (1_X_6): Suelo ON/OFF Estado Cabezal, DPT 1.001 → is_closed
+# Per-zone underfloor heating valves: position_addr → (name, device_class, cabezal_addr)
+# position_addr (1_X_8): PI demand 0-100 % (DPT 5.001) → current_valve_position
+# cabezal_addr  (1_X_6): cabezal actuator open/closed (DPT 1.001)  → is_closed
+# These are read-only from HA — the zone thermostats drive them automatically.
 VALVE_POSITION_ADDRESSES = {
     "1_0_8": ("Salón+Cocina Demanda Suelo",    "water", "1_0_6"),
     "1_1_8": ("Dorm. Principal Demanda Suelo", "water", "1_1_6"),
@@ -129,6 +147,9 @@ CLIMATE_WINDOW_SENSOR: dict[str, str] = {
 }
 
 # Fan entities: id → (name, valve_address, speed_address)
+# valve_address (1_7_1): Fancoil ON/OFF state — Onna sets this automatically based on demand.
+# speed_address (1_7_3): Fancoil speed 0-100 % — also Onna-controlled (PI output).
+# Both are read-only from HA's perspective; see fan.py for why writes are no-ops.
 FAN_ADDRESSES = {
     "fancoil_salon": ("Fancoil Salón", "1_7_1", "1_7_3"),
 }

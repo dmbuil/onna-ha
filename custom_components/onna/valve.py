@@ -1,4 +1,22 @@
-"""Onna valve entities (read-only KNX state)."""
+"""Onna valve platform — read-only KNX valve state entities.
+
+Two valve entity types:
+
+  OnnaValve         — simple boolean (open/closed) for installation-level valves:
+                      0_0_5 (underfloor heating EV) and 0_0_6 (collector valves).
+                      Controlled automatically by the zone thermostats; HA only
+                      monitors them.
+
+  OnnaPositionValve — per-zone underfloor heating valve with two signals:
+                      position_addr (1_X_8): PI demand 0-100 % — how open the valve is.
+                      cabezal_addr  (1_X_6): cabezal actuator state (open/closed).
+                      SET_POSITION is declared so HA renders a position slider, but
+                      async_set_valve_position is a no-op — Onna's own PID loop
+                      controls the valve position based on zone thermostat demand.
+
+Both entity types use RestoreEntity so that valve state survives HA restarts
+without an "unknown" flash while waiting for the next KNX push from Onna.
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -19,6 +37,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    """Create OnnaValve and OnnaPositionValve entities from const address maps."""
     coordinator: OnnaCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities: list[ValveEntity] = []
     for address_id, (name, device_class) in VALVE_ADDRESSES.items():
@@ -32,6 +51,16 @@ async def async_setup_entry(
 
 
 class OnnaValve(ValveEntity, RestoreEntity):
+    """Simple boolean valve entity (open/closed) for installation-level valves.
+
+    Covers:
+      0_0_5 — floor heating electrovalve (EV Suelo Radiante)
+      0_0_6 — collector valves (Válvulas Colector)
+
+    These are driven automatically by the zone thermostat logic inside Onna.
+    HA only reads their state for monitoring/dashboards; no write support.
+    """
+
     _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_reports_position = False
@@ -64,6 +93,7 @@ class OnnaValve(ValveEntity, RestoreEntity):
         }
 
     async def async_added_to_hass(self) -> None:
+        """Restore last valve state and subscribe to push updates."""
         if (last := await self.async_get_last_state()) is not None:
             if last.state not in ("unavailable", "unknown"):
                 self._is_open = last.state == "open"
@@ -77,11 +107,27 @@ class OnnaValve(ValveEntity, RestoreEntity):
 
     @callback
     def _handle_update(self, value: Any) -> None:
+        """Accept a live KNX push and refresh the HA state."""
         self._is_open = bool(value)
         self.async_write_ha_state()
 
 
 class OnnaPositionValve(ValveEntity, RestoreEntity):
+    """Per-zone underfloor heating valve with position and actuator state.
+
+    Tracks two KNX addresses per zone:
+      position_addr (1_X_8): PI demand 0-100 % — reported as current_valve_position.
+      cabezal_addr  (1_X_6): cabezal actuator open/closed — drives is_closed.
+
+    The position and on/off state are independent: the cabezal can be closed
+    (zone off) while the PI demand is still non-zero (zone is warming up or
+    the controller hasn't zeroed it yet).
+
+    SET_POSITION is declared (required by HA to render a position slider) but
+    the implementation is intentionally a no-op: Onna's own PID loop owns the
+    valve position and HA writes would be immediately overwritten.
+    """
+
     _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_reports_position = True
@@ -111,6 +157,7 @@ class OnnaPositionValve(ValveEntity, RestoreEntity):
 
     @property
     def is_closed(self) -> bool:
+        """Return True when the cabezal actuator is closed (zone off)."""
         return not self._cabezal_open
 
     @property
@@ -123,6 +170,7 @@ class OnnaPositionValve(ValveEntity, RestoreEntity):
         }
 
     async def async_added_to_hass(self) -> None:
+        """Restore last valve state and subscribe to both position and cabezal pushes."""
         if (last := await self.async_get_last_state()) is not None:
             if last.state not in ("unavailable", "unknown"):
                 self._cabezal_open = last.state == "open"
@@ -144,14 +192,20 @@ class OnnaPositionValve(ValveEntity, RestoreEntity):
         )
 
     async def async_set_valve_position(self, position: int) -> None:
-        """Move the valve to a specific position."""
+        """No-op — valve position is controlled exclusively by Onna's PID loop.
+
+        Declared so that HA renders the position slider in the UI for monitoring,
+        but any write from HA would be immediately overwritten by Onna's controller.
+        """
 
     @callback
     def _handle_position_update(self, value: Any) -> None:
+        """Accept a PI demand push (0-100 %) and refresh state."""
         self._position = int(value) if value is not None else None
         self.async_write_ha_state()
 
     @callback
     def _handle_cabezal_update(self, value: Any) -> None:
+        """Accept a cabezal actuator state push and refresh state."""
         self._cabezal_open = bool(value)
         self.async_write_ha_state()
