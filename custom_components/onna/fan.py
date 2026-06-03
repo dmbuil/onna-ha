@@ -1,13 +1,16 @@
-"""Fan platform for Onna — read-only fancoil status entities.
+"""Fan platform for Onna — fancoil entity with manual override support.
 
-The fancoil (Salón+Cocina) is driven entirely by Onna: it starts automatically when the
-zone demands cooling/heating and its speed is set by Onna's PI algorithm.  HA cannot and
-should not override this — attempting to turn the fancoil on/off or set its speed from HA
-would conflict with Onna's control loop.
+The fancoil (Salón+Cocina) is driven automatically by Onna: it starts when the zone
+demands cooling/heating and its speed is set by Onna's PI algorithm.
 
-For this reason, async_turn_on, async_turn_off, and async_set_percentage are intentional
-no-ops.  The TURN_ON, TURN_OFF, and SET_SPEED features are declared only so that HA renders
-the fan card correctly (with an on/off toggle and a speed slider for visual feedback).
+Write methods (turn_on, turn_off, set_percentage) perform a manual override: they write
+to address 1_7_2 (speed write) and set _override_active = True.  Onna's AND-gate logic
+then updates the valve automatically.  The override clears when the Salón+Cocina
+thermostat ON/OFF state (1_0_1) receives a push from the device.
+
+Live Onna pushes to 1_7_1 (valve state) and 1_7_3 (speed state) always update the
+displayed state, even during an active override — Onna's automatic control is always
+reflected in the entity.
 
 To enable or disable the fancoil entirely (e.g. for the off-season), use the companion
 OnnaSwitch entity ("Fancoil Salón Habilitado", address 1_7_10) in switch.py.
@@ -35,23 +38,24 @@ async def async_setup_entry(
     """Create an OnnaFan entity for every fancoil in FAN_ADDRESSES."""
     coordinator: OnnaCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities = []
-    for _, (name, valve_addr, speed_addr) in FAN_ADDRESSES.items():
+    for _, (name, valve_addr, speed_addr, speed_write_addr) in FAN_ADDRESSES.items():
         coordinator.register_address(valve_addr)
         coordinator.register_address(speed_addr)
-        entities.append(OnnaFan(coordinator, name, valve_addr, speed_addr))
+        entities.append(OnnaFan(coordinator, name, valve_addr, speed_addr, speed_write_addr))
+    coordinator.register_address("1_0_1")
     async_add_entities(entities)
 
 
 class OnnaFan(FanEntity, RestoreEntity):
-    """Read-only fancoil entity — Onna controls speed and on/off automatically.
+    """Fancoil entity with manual override support.
 
-    The fancoil (Salón+Cocina) is activated and speed-controlled by Onna's PI
-    algorithm whenever the zone's thermostat demands heating or cooling.  HA
-    cannot meaningfully override this without fighting the controller, so all
-    write methods (turn_on, turn_off, set_percentage) are intentional no-ops.
+    During normal operation, the fancoil is activated and speed-controlled by
+    Onna's PI algorithm whenever the Salón+Cocina thermostat demands heating or
+    cooling.  The displayed state always reflects live Onna pushes.
 
-    TURN_ON, TURN_OFF, and SET_SPEED features are declared so that the HA fan
-    card renders correctly with a toggle and a slider for monitoring purposes.
+    Write methods (turn_on, turn_off, set_percentage) write to the speed address
+    and set _override_active = True.  The override clears when the thermostat's
+    ON/OFF state (1_0_1) fires a dispatcher push.
 
     To enable/disable the fancoil for the season, use the companion switch
     entity (address 1_7_10) — Onna respects that flag and zeroes speed when
@@ -61,16 +65,19 @@ class OnnaFan(FanEntity, RestoreEntity):
     _attr_should_poll = False
     _attr_supported_features = FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF | FanEntityFeature.SET_SPEED
 
-    def __init__(self, coordinator: OnnaCoordinator, name: str, valve_address: str, speed_address: str) -> None:
+    def __init__(self, coordinator: OnnaCoordinator, name: str, valve_address: str, speed_address: str, speed_write_address: str) -> None:
         self._coordinator = coordinator
         self._attr_name = name
         # valve_address (1_7_1): fancoil on/off state — Onna sets this based on demand.
         self._valve_address = valve_address
         # speed_address (1_7_3): fancoil speed 0-100 % — Onna's PI output.
         self._speed_address = speed_address
+        # speed_write_address (1_7_2): written by HA during manual override.
+        self._speed_write_address = speed_write_address
         self._is_on: bool = bool(coordinator.data.get(valve_address, False))
         raw = coordinator.data.get(speed_address)
         self._percentage: int | None = int(raw) if raw is not None else None
+        self._override_active: bool = False
 
     @property
     def unique_id(self) -> str:

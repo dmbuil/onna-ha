@@ -11,6 +11,7 @@ def _make_coordinator(data=None):
     coord = MagicMock()
     coord.data = data or {}
     coord.client._onna_id = "TESTID"
+    coord.client.async_set_address_value = AsyncMock()
     return coord
 
 
@@ -20,32 +21,38 @@ def _make_coordinator(data=None):
 
 def test_fan_is_off_when_coordinator_has_no_data():
     coord = _make_coordinator()
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     assert fan.is_on is False
 
 
 def test_fan_is_on_when_valve_address_is_true():
     coord = _make_coordinator({"1_7_1": True})
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     assert fan.is_on is True
 
 
 def test_fan_is_off_when_valve_address_is_false():
     coord = _make_coordinator({"1_7_1": False})
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     assert fan.is_on is False
 
 
 def test_fan_percentage_is_none_when_no_data():
     coord = _make_coordinator()
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     assert fan.percentage is None
 
 
 def test_fan_percentage_from_speed_address():
     coord = _make_coordinator({"1_7_3": 75})
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     assert fan.percentage == 75
+
+
+def test_fan_override_inactive_on_init():
+    coord = _make_coordinator()
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
+    assert fan._override_active is False
 
 
 # ---------------------------------------------------------------------------
@@ -54,13 +61,13 @@ def test_fan_percentage_from_speed_address():
 
 def test_fan_unique_id_includes_valve_address():
     coord = _make_coordinator()
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     assert fan.unique_id == "onna_1_7_1"
 
 
 def test_fan_device_info_uses_onna_id():
     coord = _make_coordinator()
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     info = fan.device_info
     assert ("onna", "TESTID") in info["identifiers"]
 
@@ -71,7 +78,7 @@ def test_fan_device_info_uses_onna_id():
 
 def test_handle_valve_update_sets_is_on():
     coord = _make_coordinator()
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     fan.async_write_ha_state = MagicMock()
     fan._handle_valve_update(True)
     assert fan.is_on is True
@@ -80,7 +87,7 @@ def test_handle_valve_update_sets_is_on():
 
 def test_handle_valve_update_sets_is_off():
     coord = _make_coordinator({"1_7_1": True})
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     fan.async_write_ha_state = MagicMock()
     fan._handle_valve_update(False)
     assert fan.is_on is False
@@ -89,7 +96,7 @@ def test_handle_valve_update_sets_is_off():
 
 def test_handle_speed_update_sets_percentage():
     coord = _make_coordinator()
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     fan.async_write_ha_state = MagicMock()
     fan._handle_speed_update(50)
     assert fan.percentage == 50
@@ -118,7 +125,7 @@ async def test_setup_entry_registers_both_addresses():
 @pytest.mark.anyio
 async def test_async_added_to_hass_connects_both_dispatchers():
     coord = _make_coordinator()
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     fan.hass = MagicMock()
     fan.async_on_remove = MagicMock()
 
@@ -139,7 +146,7 @@ async def test_async_added_to_hass_connects_both_dispatchers():
 @pytest.mark.anyio
 async def test_fan_restore_on_with_percentage():
     coord = _make_coordinator()
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     fan.hass = MagicMock()
     fan.async_on_remove = MagicMock()
     last = MagicMock()
@@ -155,7 +162,7 @@ async def test_fan_restore_on_with_percentage():
 @pytest.mark.anyio
 async def test_fan_restore_off():
     coord = _make_coordinator()
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     fan.hass = MagicMock()
     fan.async_on_remove = MagicMock()
     last = MagicMock()
@@ -170,7 +177,7 @@ async def test_fan_restore_off():
 @pytest.mark.anyio
 async def test_fan_restore_skipped_when_unavailable():
     coord = _make_coordinator({"1_7_1": True, "1_7_3": 50})
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     fan.hass = MagicMock()
     fan.async_on_remove = MagicMock()
     last = MagicMock()
@@ -186,7 +193,7 @@ async def test_fan_restore_skipped_when_unavailable():
 @pytest.mark.anyio
 async def test_fan_restore_skipped_when_no_last_state():
     coord = _make_coordinator()
-    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3")
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
     fan.hass = MagicMock()
     fan.async_on_remove = MagicMock()
     fan.async_get_last_state = AsyncMock(return_value=None)
