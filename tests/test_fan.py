@@ -219,6 +219,71 @@ async def test_set_percentage_zero_turns_off():
     assert fan.is_on is False
 
 
+# ---------------------------------------------------------------------------
+# Override clearance on thermostat ON/OFF event
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_setup_entry_registers_thermostat_onoff_address():
+    hass = MagicMock()
+    entry = MagicMock()
+    coord = _make_coordinator()
+    hass.data = {DOMAIN: {entry.entry_id: coord}}
+
+    added = []
+    await async_setup_entry(hass, entry, lambda entities: added.extend(entities))
+
+    registered = [call.args[0] for call in coord.register_address.call_args_list]
+    assert "1_0_1" in registered
+
+
+@pytest.mark.anyio
+async def test_async_added_to_hass_connects_thermostat_dispatcher():
+    coord = _make_coordinator()
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
+    fan.hass = MagicMock()
+    fan.async_on_remove = MagicMock()
+
+    with patch(
+        "custom_components.onna.fan.async_dispatcher_connect",
+        return_value=lambda: None,
+    ) as mock_connect:
+        await fan.async_added_to_hass()
+
+    signals = [call.args[1] for call in mock_connect.call_args_list]
+    assert SIGNAL_ADDRESS_UPDATE.format(address_id="1_0_1") in signals
+
+
+def test_thermostat_onoff_clears_override():
+    coord = _make_coordinator()
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
+    fan.async_write_ha_state = MagicMock()
+    fan._override_active = True
+    fan._handle_thermostat_onoff(1)
+    assert fan._override_active is False
+    fan.async_write_ha_state.assert_called_once()
+
+
+def test_thermostat_onoff_noop_when_no_override():
+    coord = _make_coordinator()
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
+    fan.async_write_ha_state = MagicMock()
+    fan._override_active = False
+    fan._handle_thermostat_onoff(0)
+    fan.async_write_ha_state.assert_not_called()
+
+
+def test_live_onna_update_accepted_during_override():
+    """Onna pushes always update display regardless of override state."""
+    coord = _make_coordinator({"1_7_1": True, "1_7_3": 50})
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
+    fan.async_write_ha_state = MagicMock()
+    fan._override_active = True
+    fan._handle_valve_update(False)
+    assert fan.is_on is False
+    assert fan._override_active is True  # flag unchanged — only 1_0_1 clears it
+
+
 # RestoreEntity — last known state
 # ---------------------------------------------------------------------------
 

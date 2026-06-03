@@ -105,6 +105,12 @@ class OnnaFan(FanEntity, RestoreEntity):
         }
 
     @callback
+    def _handle_thermostat_onoff(self, value: Any) -> None:
+        if self._override_active:
+            self._override_active = False
+            self.async_write_ha_state()
+
+    @callback
     def _handle_valve_update(self, value: Any) -> None:
         """Accept a fancoil on/off push from Onna and refresh state."""
         self._is_on = bool(value)
@@ -157,5 +163,12 @@ class OnnaFan(FanEntity, RestoreEntity):
                 self.hass,
                 SIGNAL_ADDRESS_UPDATE.format(address_id=self._speed_address),
                 self._handle_speed_update,
+            )
+        )
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_ADDRESS_UPDATE.format(address_id="1_0_1"),
+                self._handle_thermostat_onoff,
             )
         )
