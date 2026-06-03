@@ -117,19 +117,26 @@ class OnnaFan(FanEntity, RestoreEntity):
         self.async_write_ha_state()
 
     async def async_turn_on(self, percentage=None, preset_mode=None, **kwargs) -> None:
-        """No-op — fancoil is controlled automatically by Onna.
-
-        To enable the fancoil, use the 'Fancoil Salón Habilitado' switch entity.
-        """
+        speed = percentage if percentage is not None else (self._percentage if self._percentage else 50)
+        await self._coordinator.client.async_set_address_value(self._speed_write_address, speed)
+        self._override_active = True
+        self._is_on = True
+        self._percentage = speed
+        self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
-        """No-op — fancoil is controlled automatically by Onna.
-
-        To disable the fancoil, use the 'Fancoil Salón Habilitado' switch entity.
-        """
+        await self._coordinator.client.async_set_address_value(self._speed_write_address, 0)
+        self._override_active = True
+        self._is_on = False
+        self._percentage = 0
+        self.async_write_ha_state()
 
     async def async_set_percentage(self, percentage: int) -> None:
-        """No-op — speed is set automatically by Onna's PI algorithm based on demand."""
+        await self._coordinator.client.async_set_address_value(self._speed_write_address, percentage)
+        self._override_active = True
+        self._is_on = percentage > 0
+        self._percentage = percentage
+        self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
         """Restore last known state and subscribe to valve and speed dispatcher signals."""
