@@ -96,6 +96,10 @@ class OnnaFan(FanEntity, RestoreEntity):
         return 1
 
     @property
+    def extra_state_attributes(self) -> dict:
+        return {"override_active": self._override_active}
+
+    @property
     def device_info(self):
         return {
             "identifiers": {(DOMAIN, self._coordinator.client._onna_id)},

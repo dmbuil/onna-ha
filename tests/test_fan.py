@@ -344,3 +344,31 @@ async def test_fan_restore_skipped_when_no_last_state():
     with patch("custom_components.onna.fan.async_dispatcher_connect", return_value=lambda: None):
         await fan.async_added_to_hass()
     assert fan._is_on is False  # default
+
+
+# ---------------------------------------------------------------------------
+# Extra state attributes
+# ---------------------------------------------------------------------------
+
+def test_extra_state_attributes_override_inactive():
+    coord = _make_coordinator()
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
+    assert fan.extra_state_attributes == {"override_active": False}
+
+
+@pytest.mark.anyio
+async def test_extra_state_attributes_active_after_turn_on():
+    coord = _make_coordinator({"1_7_3": 50})
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
+    fan.async_write_ha_state = MagicMock()
+    await fan.async_turn_on()
+    assert fan.extra_state_attributes == {"override_active": True}
+
+
+def test_extra_state_attributes_clears_after_thermostat_event():
+    coord = _make_coordinator()
+    fan = OnnaFan(coord, "Fancoil Salón", "1_7_1", "1_7_3", "1_7_2")
+    fan.async_write_ha_state = MagicMock()
+    fan._override_active = True
+    fan._handle_thermostat_onoff(1)
+    assert fan.extra_state_attributes == {"override_active": False}
