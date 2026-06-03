@@ -69,6 +69,8 @@ BINARY_SENSOR_ADDRESSES = {
 VALVE_ADDRESSES = {
     "0_0_5": ("EV Suelo Radiante",  "water"),
     "0_0_6": ("Válvulas Colector",  "water"),
+    "1_5_1": ("Baño 1 Cabezal",    "water"),
+    "1_6_1": ("Baño 2 Cabezal",    "water"),
 }
 
 # Per-zone underfloor heating valves: position_addr → (name, device_class, actuator_addr)
