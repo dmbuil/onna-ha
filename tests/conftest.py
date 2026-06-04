@@ -19,8 +19,22 @@ class _Required(str):
     pass
 
 
-class _Optional(str):
-    pass
+class _Optional:
+    def __init__(self, name, default=None, **kwargs):
+        self._name = name
+        self.default = default
+
+    def __str__(self):
+        return self._name
+
+    def __repr__(self):
+        return f"_Optional({self._name!r})"
+
+    def __hash__(self):
+        return hash(self._name)
+
+    def __eq__(self, other):
+        return str(self) == str(other)
 
 
 class _Schema:
@@ -34,6 +48,7 @@ class _Schema:
 vol_mod.Required = _Required
 vol_mod.Optional = _Optional
 vol_mod.Schema = _Schema
+vol_mod.In = lambda choices: choices  # identity — sufficient for test assertions
 
 
 # ---- homeassistant.core ----
@@ -388,3 +403,31 @@ class _SwitchEntity:
 
 
 switch_mod.SwitchEntity = _SwitchEntity
+
+# ---- homeassistant.config_entries.OptionsFlow ----
+class _OptionsFlow:
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+
+    def async_show_form(self, *, step_id, data_schema, errors=None):
+        return {"type": "form", "step_id": step_id, "data_schema": data_schema, "errors": errors or {}}
+
+    def async_create_entry(self, *, title="", data):
+        return {"type": "create_entry", "data": data}
+
+ce_mod.OptionsFlow = _OptionsFlow
+ce_mod.OptionsFlowWithConfigEntry = _OptionsFlow
+
+# ---- homeassistant.helpers.selector ----
+sel_mod = _make_module("homeassistant.helpers.selector")
+
+class _EntitySelectorConfig:
+    def __init__(self, **kwargs):
+        self._kwargs = kwargs
+
+class _EntitySelector:
+    def __init__(self, config=None):
+        self.config = config
+
+sel_mod.EntitySelectorConfig = _EntitySelectorConfig
+sel_mod.EntitySelector = _EntitySelector

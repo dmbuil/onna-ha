@@ -15,10 +15,33 @@
     },
     "error": {
       "invalid_host": "La dirección IP no puede estar vacía.",
-      "invalid_onna_id": "El Onna ID no puede estar vacío."
+      "invalid_onna_id": "El Onna ID no puede estar vacío.",
+      "cannot_connect": "No se pudo conectar al dispositivo. Comprueba la IP y que el Onna esté encendido.",
+      "no_devices_found": "El dispositivo no devolvió zonas de climatización configuradas."
     },
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+    }
+  },
+  "options": {
+    "step": {
+      "zone_picker": {
+        "title": "Onna — configurar zona",
+        "data": {
+          "zone": "Zona"
+        }
+      },
+      "zone_detail": {
+        "title": "Onna — sensores externos",
+        "data": {
+          "temp_sensor": "Sensor de temperatura externo (opcional)",
+          "window_sensor": "Sensor de ventana (opcional)"
+        },
+        "data_description": {
+          "temp_sensor": "Sensor HA que sustituye a la sonda interna del termostato para esta zona.",
+          "window_sensor": "Sensor binario de ventana/puerta. Al abrirse más de 10 min apaga la zona automáticamente."
+        }
+      }
     }
   }
 }
