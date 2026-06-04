@@ -3,22 +3,51 @@
     "step": {
       "user": {
         "title": "Onna — configuración",
+        "description": "Introduce los datos de conexión de tu dispositivo Onna. La integración se conectará automáticamente para descubrir todas las zonas y entidades configuradas.",
         "data": {
           "host": "Dirección IP",
           "onna_id": "Onna ID"
         },
         "data_description": {
-          "host": "Dirección IP local del dispositivo Onna (p. ej. 192.168.1.10).",
-          "onna_id": "Identificador del dispositivo, visible en la app Onna → Ajustes → Info del dispositivo."
+          "host": "Dirección IP local del dispositivo Onna en tu red (p. ej. 192.168.1.10). Puedes consultarla en el router o en la app Onna → Ajustes → Info del dispositivo.",
+          "onna_id": "Identificador único del dispositivo. Lo encontrarás en la app Onna → Ajustes → Info del dispositivo (campo 'ID')."
         }
       }
     },
     "error": {
       "invalid_host": "La dirección IP no puede estar vacía.",
-      "invalid_onna_id": "El Onna ID no puede estar vacío."
+      "invalid_onna_id": "El Onna ID no puede estar vacío.",
+      "cannot_connect": "No se pudo conectar al dispositivo. Comprueba que la IP es correcta, que el Onna está encendido y accesible desde este servidor.",
+      "no_devices_found": "El dispositivo respondió pero no devolvió ninguna zona de climatización configurada. Comprueba la configuración en la app Onna."
     },
     "abort": {
       "already_configured": "El dispositivo ya está configurado."
+    }
+  },
+  "options": {
+    "step": {
+      "zone_picker": {
+        "title": "Onna — configurar zona",
+        "description": "Selecciona la zona de climatización que deseas personalizar. Puedes añadir un sensor de temperatura externo (más preciso que la sonda interna del termostato) y un sensor de ventana para apagar la zona automáticamente cuando la ventana lleve abierta más de 10 minutos. Cuando termines con una zona, vuelve a Configurar para ajustar las demás.",
+        "data": {
+          "zone": "Zona"
+        },
+        "data_description": {
+          "zone": "Elige la zona que quieres configurar. Puedes repetir el proceso para cada zona de forma independiente."
+        }
+      },
+      "zone_detail": {
+        "title": "Onna — sensores externos de la zona",
+        "description": "Ambos campos son opcionales. Si dejas un campo en blanco, esa función quedará desactivada para esta zona y se usará el comportamiento predeterminado (sonda interna del termostato / sin detección de ventana).",
+        "data": {
+          "temp_sensor": "Sensor de temperatura externo",
+          "window_sensor": "Sensor de ventana / puerta"
+        },
+        "data_description": {
+          "temp_sensor": "Entidad HA de tipo sensor (dominio sensor) que mide la temperatura real de la habitación en °C. Al configurarlo, la temperatura mostrada en HA y el punto de ajuste enviado al bus KNX se corrigen automáticamente para compensar la diferencia entre la sonda interna del termostato y la temperatura real. Si este sensor queda no disponible, la integración vuelve a usar la sonda interna sin interrupciones.",
+          "window_sensor": "Entidad HA de tipo sensor binario (dominio binary_sensor) asociada a un detector de apertura de ventana o puerta. Cuando el sensor reporta 'on' (abierto) durante más de 10 minutos, la zona se apaga automáticamente para ahorrar energía. La zona se reactiva en cuanto se detecta el cierre. Las zonas que ya estaban apagadas manualmente no se ven afectadas."
+        }
+      }
     }
   }
 }
