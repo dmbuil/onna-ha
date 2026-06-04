@@ -21,6 +21,25 @@ DOMAIN = "onna"
 CONF_HOST    = "host"
 CONF_ONNA_ID = "onna_id"
 
+# Maps unit suffix found in address names (e.g. "(W)") →
+# (ha_unit, ha_device_class, ha_state_class).  Used by config_parser.
+SENSOR_UNIT_SUFFIXES: dict[str, tuple] = {
+    "(W)":   ("W",     "power",              "measurement"),
+    "(V)":   ("V",     "voltage",            "measurement"),
+    "(mA)":  ("mA",    "current",            "measurement"),
+    "(kWh)": ("kWh",   "energy",             "total_increasing"),
+    "(m3)":  ("m³",    "water",              "total_increasing"),
+    "(m3h)": ("m³/h",  "volume_flow_rate",   "measurement"),
+    "(Lh)":  ("L/h",   "volume_flow_rate",   "measurement"),
+}
+
+# Keyword fallback for addresses whose names carry no unit suffix.
+# Entries are (keyword, unit, device_class, state_class); first match wins.
+SENSOR_KEYWORD_MAP: list[tuple] = [
+    ("Temperatura", "°C", "temperature", "measurement"),
+    ("Temp.",       "°C", "temperature", "measurement"),
+]
+
 # KNX address map: id → (name, unit, device_class, state_class)
 # Sensors (numeric)
 SENSOR_ADDRESSES = {
