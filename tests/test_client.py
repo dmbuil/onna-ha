@@ -98,6 +98,44 @@ async def test_process_incoming_frame_ignores_non_address_events():
 
 
 # ---------------------------------------------------------------------------
+# READ_CONFIGURATION ack parsing
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_ack_stores_offset_in_config_settings():
+    client = OnnaClient(host="192.168.10.3", onna_id="TEST")
+    ack = '431[{"settings":{"internalSensorOffset":"-0.4"},"addresses":[]}]'
+    await client._process_frame(ack)
+    assert client.config_settings["internalSensorOffset"] == -0.4
+
+
+@pytest.mark.anyio
+async def test_ack_dispatches_offset_to_registered_callback():
+    """Reconnect path: entity already registered, must receive the value."""
+    client = OnnaClient(host="192.168.10.3", onna_id="TEST")
+    cb = AsyncMock()
+    client.register_address_callback("cfg_internal_offset", cb)
+    ack = '431[{"settings":{"internalSensorOffset":"-0.4"},"addresses":[]}]'
+    await client._process_frame(ack)
+    cb.assert_called_once_with(-0.4)
+
+
+@pytest.mark.anyio
+async def test_ack_ignores_malformed_frame():
+    client = OnnaClient(host="192.168.10.3", onna_id="TEST")
+    await client._process_frame("431not-valid-json")
+    assert client.config_settings == {}
+
+
+@pytest.mark.anyio
+async def test_ack_positive_offset():
+    client = OnnaClient(host="192.168.10.3", onna_id="TEST")
+    ack = '431[{"settings":{"internalSensorOffset":"1.5"},"addresses":[]}]'
+    await client._process_frame(ack)
+    assert client.config_settings["internalSensorOffset"] == 1.5
+
+
+# ---------------------------------------------------------------------------
 # Initial ready event
 # ---------------------------------------------------------------------------
 
@@ -116,3 +154,65 @@ async def test_initial_ready_is_set_after_init_timeout():
     client._schedule_ready()
     await asyncio.sleep(client.INIT_COLLECT_S + 0.1)
     assert client.initial_ready.is_set()
+
+
+# ---------------------------------------------------------------------------
+# async_fetch_config
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_async_fetch_config_returns_payload():
+    """async_fetch_config returns the dict from the 431 ack frame."""
+    raw_payload = [{"addresses": [{"id": "0_0_8"}], "configuration": []}]
+    frame_431 = "431" + json.dumps(raw_payload)
+
+    mock_ws = AsyncMock()
+    mock_ws.__aenter__ = AsyncMock(return_value=mock_ws)
+    mock_ws.__aexit__ = AsyncMock(return_value=False)
+    mock_ws.recv = AsyncMock(side_effect=["0{}", "40", frame_431])
+    mock_ws.send = AsyncMock()
+
+    with patch("custom_components.onna.client.websockets") as mock_wss:
+        mock_wss.connect.return_value = mock_ws
+        result = await OnnaClient.async_fetch_config("192.168.1.1", "abc123")
+
+    assert result == raw_payload[0]
+
+
+@pytest.mark.anyio
+async def test_async_fetch_config_skips_non_431_frames():
+    """async_fetch_config ignores ping frames while waiting for the 431 ack."""
+    raw_payload = [{"addresses": [], "configuration": []}]
+    frame_431 = "431" + json.dumps(raw_payload)
+
+    mock_ws = AsyncMock()
+    mock_ws.__aenter__ = AsyncMock(return_value=mock_ws)
+    mock_ws.__aexit__ = AsyncMock(return_value=False)
+    # EIO open, SIO namespace, EIO ping, then the 431 ack
+    mock_ws.recv = AsyncMock(side_effect=["0{}", "40", "2", frame_431])
+    mock_ws.send = AsyncMock()
+
+    with patch("custom_components.onna.client.websockets") as mock_wss:
+        mock_wss.connect.return_value = mock_ws
+        result = await OnnaClient.async_fetch_config("192.168.1.1", "abc123")
+
+    assert result == raw_payload[0]
+    mock_ws.send.assert_any_call("3")
+
+
+@pytest.mark.anyio
+async def test_async_fetch_config_raises_cannot_connect_on_timeout():
+    """async_fetch_config raises CannotConnect when the connection times out."""
+    import asyncio as _asyncio
+    from custom_components.onna.client import CannotConnect
+
+    mock_ws = AsyncMock()
+    mock_ws.__aenter__ = AsyncMock(return_value=mock_ws)
+    mock_ws.__aexit__ = AsyncMock(return_value=False)
+    mock_ws.recv = AsyncMock(side_effect=_asyncio.TimeoutError())
+    mock_ws.send = AsyncMock()
+
+    with patch("custom_components.onna.client.websockets") as mock_wss:
+        mock_wss.connect.return_value = mock_ws
+        with pytest.raises(CannotConnect):
+            await OnnaClient.async_fetch_config("192.168.1.1", "abc123")

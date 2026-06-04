@@ -34,6 +34,11 @@ import logging
 from collections import defaultdict
 from typing import Any, Callable, Coroutine
 
+try:
+    import websockets  # optional dep — only needed at runtime
+except ImportError:  # pragma: no cover
+    websockets = None  # type: ignore[assignment]
+
 _LOGGER = logging.getLogger(__name__)
 
 # Socket.IO v2 packet-type prefixes we build or parse.
@@ -41,6 +46,11 @@ _SIO_EVENT_PREFIX = "42"   # regular event frame
 _SIO_ACK_PREFIX   = "421"  # ack frame (server acknowledging our request)
 
 AddressCallback = Callable[[Any], Coroutine]
+
+
+class CannotConnect(Exception):
+    """Raised by async_fetch_config when the temporary connection fails."""
+
 
 
 class OnnaClient:
@@ -135,6 +145,40 @@ class OnnaClient:
             separators=(",", ":"),
         )
 
+    @classmethod
+    async def async_fetch_config(
+        cls, host: str, onna_id: str, port: int = 4001, timeout: float = 10.0
+    ) -> dict:
+        """One-shot config fetch for use during ConfigFlow setup.
+
+        Opens a temporary WebSocket, sends READ_CONFIGURATION, waits for the
+        full 431 ack payload, and closes the connection.  Does NOT start the
+        background receive loop used during normal operation.
+
+        Raises CannotConnect on timeout or any connection error.
+        """
+        url = (
+            f"ws://{host}:{port}/socket.io/"
+            f"?EIO=3&transport=websocket&onnaId={onna_id}"
+        )
+        try:
+            async with websockets.connect(url) as ws:
+                await asyncio.wait_for(ws.recv(), timeout=timeout)   # EIO open
+                await asyncio.wait_for(ws.recv(), timeout=timeout)   # SIO namespace
+                await ws.send(cls.build_read_configuration())
+                while True:
+                    frame = await asyncio.wait_for(ws.recv(), timeout=timeout)
+                    if frame == "2":
+                        await ws.send("3")
+                        continue
+                    if frame.startswith("431"):
+                        payload = json.loads(frame[3:])
+                        if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+                            return payload[0]
+                        return {}
+        except Exception as exc:
+            raise CannotConnect(str(exc)) from exc
+
     # ------------------------------------------------------------------
     # Callback registration
     # ------------------------------------------------------------------
@@ -225,8 +269,6 @@ class OnnaClient:
         Loops forever via ``websockets.connect``'s reconnect iterator; each
         connection loss is logged and the loop restarts automatically.
         """
-        import websockets  # optional dep — only needed at runtime
-
         url = (
             f"ws://{self._host}:{self._port}/socket.io/"
             f"?EIO=3&transport=websocket&onnaId={self._onna_id}"
