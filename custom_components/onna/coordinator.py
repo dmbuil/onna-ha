@@ -56,6 +56,9 @@ class OnnaCoordinator:
         self.client = client
         # Latest value for every registered KNX address; entities seed from here.
         self.data: dict[str, Any] = {}
+        # Entity address maps derived from the device's READ_CONFIGURATION payload.
+        # Set by async_setup_entry from entry.data["device_config"].
+        self.device_config: dict = {}
         self._task: asyncio.Task | None = None
         # Tracks which addresses have already been registered to prevent
         # duplicate client callbacks from the same address being registered
