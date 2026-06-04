@@ -80,7 +80,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import CLIMATE_ADDRESSES, CLIMATE_TEMP_OVERRIDE, CLIMATE_WINDOW_SENSOR, DOMAIN
+from .const import DOMAIN
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
 
 # KNX address for the installation-wide heating/cooling mode (DPT 1.001: 1=winter, 0=summer).
@@ -109,10 +109,12 @@ async def async_setup_entry(
 ) -> None:
     """Create one OnnaClimate per zone plus the OnnaGeneralClimate master."""
     coordinator: OnnaCoordinator = hass.data[DOMAIN][entry.entry_id]
+    temp_overrides = entry.options.get("climate_temp_override", {})
+    window_sensors = entry.options.get("climate_window_sensor", {})
     entities: list[ClimateEntity] = []
 
-    for zone_id, (name, temp_addr, setpoint_r, setpoint_w, onoff_r, onoff_w, demand_addr) in CLIMATE_ADDRESSES.items():
-        # Register all addresses this zone needs so coordinator routes their pushes.
+    for zone_id, info in coordinator.device_config["climate_addresses"].items():
+        name, temp_addr, setpoint_r, setpoint_w, onoff_r, onoff_w, demand_addr = info
         coordinator.register_address(temp_addr)
         coordinator.register_address(setpoint_r)
         coordinator.register_address(onoff_r)
@@ -122,13 +124,10 @@ async def async_setup_entry(
             coordinator, name,
             temp_addr, setpoint_r, setpoint_w,
             onoff_r, onoff_w, demand_addr,
-            external_temp_entity_id=CLIMATE_TEMP_OVERRIDE.get(zone_id),
-            window_sensor_entity_id=CLIMATE_WINDOW_SENSOR.get(zone_id),
+            external_temp_entity_id=temp_overrides.get(zone_id),
+            window_sensor_entity_id=window_sensors.get(zone_id),
         ))
 
-    # _WINTER_ADDR is already registered by the loop above, but register_address
-    # is idempotent so this is safe — it gives the general climate entity the
-    # same mode updates without wiring a duplicate callback.
     coordinator.register_address(_WINTER_ADDR)
     entities.append(OnnaGeneralClimate(coordinator))
 

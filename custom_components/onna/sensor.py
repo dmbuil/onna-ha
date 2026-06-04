@@ -47,7 +47,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later
 
-from .const import DOMAIN, SENSOR_ADDRESSES
+from .const import DOMAIN
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
 
 # Seconds of silence before a flow sensor is reset to 0.
@@ -60,10 +60,11 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create one OnnaSensor for every address in SENSOR_ADDRESSES."""
+    """Create one OnnaSensor for every address in coordinator.device_config."""
     coordinator: OnnaCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities = []
-    for address_id, (name, unit, device_class, state_class) in SENSOR_ADDRESSES.items():
+    for address_id, info in coordinator.device_config["sensor_addresses"].items():
+        name, unit, device_class, state_class = info
         coordinator.register_address(address_id)
         entities.append(OnnaSensor(coordinator, address_id, name, unit, device_class, state_class))
     async_add_entities(entities)

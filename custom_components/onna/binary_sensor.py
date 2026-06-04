@@ -35,7 +35,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN, BINARY_SENSOR_ADDRESSES
+from .const import DOMAIN
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
 
 
@@ -44,10 +44,11 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create one OnnaBinarySensor for every address in BINARY_SENSOR_ADDRESSES."""
+    """Create one OnnaBinarySensor for every address in coordinator.device_config."""
     coordinator: OnnaCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities = []
-    for address_id, (name, device_class, inverted) in BINARY_SENSOR_ADDRESSES.items():
+    for address_id, info in coordinator.device_config["binary_sensor_addresses"].items():
+        name, device_class, inverted = info
         coordinator.register_address(address_id)
         entities.append(OnnaBinarySensor(coordinator, address_id, name, device_class, inverted))
     async_add_entities(entities)

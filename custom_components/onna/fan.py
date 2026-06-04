@@ -26,7 +26,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN, FAN_ADDRESSES
+from .const import DOMAIN
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
 
 
@@ -35,14 +35,15 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create an OnnaFan entity for every fancoil in FAN_ADDRESSES."""
+    """Create an OnnaFan entity for every fancoil in coordinator.device_config."""
     coordinator: OnnaCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities = []
-    for _, (name, valve_addr, speed_addr, speed_write_addr) in FAN_ADDRESSES.items():
+    for _, info in coordinator.device_config["fan_addresses"].items():
+        name, valve_addr, speed_addr, speed_write_addr, thermostat_onoff_r = info
         coordinator.register_address(valve_addr)
         coordinator.register_address(speed_addr)
-        entities.append(OnnaFan(coordinator, name, valve_addr, speed_addr, speed_write_addr))
-    coordinator.register_address("1_0_1")
+        coordinator.register_address(thermostat_onoff_r)
+        entities.append(OnnaFan(coordinator, name, valve_addr, speed_addr, speed_write_addr, thermostat_onoff_r))
     async_add_entities(entities)
 
 
@@ -65,7 +66,7 @@ class OnnaFan(FanEntity, RestoreEntity):
     _attr_should_poll = False
     _attr_supported_features = FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF | FanEntityFeature.SET_SPEED
 
-    def __init__(self, coordinator: OnnaCoordinator, name: str, valve_address: str, speed_address: str, speed_write_address: str) -> None:
+    def __init__(self, coordinator: OnnaCoordinator, name: str, valve_address: str, speed_address: str, speed_write_address: str, thermostat_onoff_r: str) -> None:
         self._coordinator = coordinator
         self._attr_name = name
         # valve_address (1_7_1): fancoil on/off state — Onna sets this based on demand.
@@ -74,6 +75,9 @@ class OnnaFan(FanEntity, RestoreEntity):
         self._speed_address = speed_address
         # speed_write_address (1_7_2): written by HA during manual override.
         self._speed_write_address = speed_write_address
+        # thermostat_onoff_r: the zone thermostat ON/OFF state address whose push
+        # clears the manual override flag (e.g. "1_0_1" for Salón+Cocina).
+        self._thermostat_onoff_r = thermostat_onoff_r
         self._is_on: bool = bool(coordinator.data.get(valve_address, False))
         raw = coordinator.data.get(speed_address)
         self._percentage: int | None = int(raw) if raw is not None else None
@@ -172,7 +176,7 @@ class OnnaFan(FanEntity, RestoreEntity):
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,
-                SIGNAL_ADDRESS_UPDATE.format(address_id="1_0_1"),
+                SIGNAL_ADDRESS_UPDATE.format(address_id=self._thermostat_onoff_r),
                 self._handle_thermostat_onoff,
             )
         )

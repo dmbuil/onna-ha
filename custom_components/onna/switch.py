@@ -35,7 +35,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN, SWITCH_ADDRESSES
+from .const import DOMAIN
 from .coordinator import OnnaCoordinator
 
 
@@ -44,11 +44,11 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create one OnnaSwitch for every address in SWITCH_ADDRESSES."""
+    """Create one OnnaSwitch for every address in coordinator.device_config."""
     coordinator: OnnaCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities = [
-        OnnaSwitch(coordinator, address_id, name)
-        for address_id, (name,) in SWITCH_ADDRESSES.items()
+        OnnaSwitch(coordinator, address_id, info[0])
+        for address_id, info in coordinator.device_config["switch_addresses"].items()
     ]
     async_add_entities(entities)
 

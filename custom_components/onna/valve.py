@@ -9,7 +9,7 @@ Two valve entity types:
 
   OnnaPositionValve — per-zone underfloor heating valve with two signals:
                       position_addr (1_X_8): PI demand 0-100 % — how open the valve is.
-                      cabezal_addr  (1_X_6): cabezal actuator state (open/closed).
+                      actuator_addr (1_X_6): actuator head state (open/closed).
                       SET_POSITION is declared so HA renders a position slider, but
                       async_set_valve_position is a no-op — Onna's own PID loop
                       controls the valve position based on zone thermostat demand.
@@ -28,7 +28,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN, VALVE_ADDRESSES, VALVE_POSITION_ADDRESSES
+from .const import DOMAIN
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
 
 
@@ -37,13 +37,15 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create OnnaValve and OnnaPositionValve entities from const address maps."""
+    """Create OnnaValve and OnnaPositionValve entities from coordinator.device_config."""
     coordinator: OnnaCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities: list[ValveEntity] = []
-    for address_id, (name, device_class) in VALVE_ADDRESSES.items():
+    for address_id, info in coordinator.device_config["valve_addresses"].items():
+        name, device_class = info
         coordinator.register_address(address_id)
         entities.append(OnnaValve(coordinator, address_id, name, device_class))
-    for position_addr, (name, device_class, cabezal_addr) in VALVE_POSITION_ADDRESSES.items():
+    for position_addr, info in coordinator.device_config["valve_position_addresses"].items():
+        name, device_class, cabezal_addr = info
         coordinator.register_address(position_addr)
         coordinator.register_address(cabezal_addr)
         entities.append(OnnaPositionValve(coordinator, position_addr, cabezal_addr, name, device_class))
@@ -117,11 +119,11 @@ class OnnaPositionValve(ValveEntity, RestoreEntity):
 
     Tracks two KNX addresses per zone:
       position_addr (1_X_8): PI demand 0-100 % — reported as current_valve_position.
-      cabezal_addr  (1_X_6): cabezal actuator open/closed — drives is_closed.
+      actuator_addr (1_X_6): actuator head open/closed — drives is_closed.
 
-    The position and on/off state are independent: the cabezal can be closed
-    (zone off) while the PI demand is still non-zero (zone is warming up or
-    the controller hasn't zeroed it yet).
+    The position and on/off state are independent: the actuator head can be
+    closed (zone off) while the PI demand is still non-zero (zone is warming
+    up or the controller hasn't zeroed it yet).
 
     SET_POSITION is declared (required by HA to render a position slider) but
     the implementation is intentionally a no-op: Onna's own PID loop owns the
@@ -157,7 +159,7 @@ class OnnaPositionValve(ValveEntity, RestoreEntity):
 
     @property
     def is_closed(self) -> bool:
-        """Return True when the cabezal actuator is closed (zone off)."""
+        """Return True when the actuator head is closed (zone off)."""
         return not self._cabezal_open
 
     @property
@@ -170,7 +172,7 @@ class OnnaPositionValve(ValveEntity, RestoreEntity):
         }
 
     async def async_added_to_hass(self) -> None:
-        """Restore last valve state and subscribe to both position and cabezal pushes."""
+        """Restore last valve state and subscribe to both position and actuator pushes."""
         if (last := await self.async_get_last_state()) is not None:
             if last.state not in ("unavailable", "unknown"):
                 self._cabezal_open = last.state == "open"
@@ -206,6 +208,6 @@ class OnnaPositionValve(ValveEntity, RestoreEntity):
 
     @callback
     def _handle_cabezal_update(self, value: Any) -> None:
-        """Accept a cabezal actuator state push and refresh state."""
+        """Accept an actuator head state push and refresh state."""
         self._cabezal_open = bool(value)
         self.async_write_ha_state()
