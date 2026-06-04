@@ -12,10 +12,22 @@ def _make_hass():
     return hass
 
 
+_MINIMAL_DEVICE_CONFIG = {
+    "sensor_addresses": {},
+    "binary_sensor_addresses": {},
+    "valve_addresses": {},
+    "valve_position_addresses": {},
+    "climate_addresses": {},
+    "switch_addresses": {},
+    "fan_addresses": {},
+}
+
+
 def _make_entry(host="192.168.10.3", onna_id="1HPNi16"):
     entry = MagicMock()
     entry.entry_id = "test_entry_id"
-    entry.data = {CONF_HOST: host, CONF_ONNA_ID: onna_id}
+    entry.data = {CONF_HOST: host, CONF_ONNA_ID: onna_id, "device_config": _MINIMAL_DEVICE_CONFIG}
+    entry.options = {}
     return entry
 
 
@@ -136,3 +148,30 @@ async def test_coordinator_async_start_waits_for_client_initial_ready():
     # async_start should have waited at least until the event was set
     assert ready_event.is_set()
     assert elapsed >= 0.05
+
+
+# ---------------------------------------------------------------------------
+# async_migrate_entry
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_migrate_entry_v1_to_v2_adds_device_config():
+    """async_migrate_entry upgrades a VERSION 1 entry by injecting device_config."""
+    from custom_components.onna import async_migrate_entry
+
+    mock_hass = MagicMock()
+    mock_entry = MagicMock()
+    mock_entry.version = 1
+    mock_entry.data = {CONF_HOST: "192.168.1.1", CONF_ONNA_ID: "abc"}
+
+    updated_data = {}
+    def _update(entry, *, data=None, version=None):
+        if data is not None:
+            updated_data.update(data)
+    mock_hass.config_entries.async_update_entry.side_effect = _update
+
+    result = await async_migrate_entry(mock_hass, mock_entry)
+    assert result is True
+    assert "device_config" in updated_data
+    assert "sensor_addresses" in updated_data["device_config"]
+    assert "climate_addresses" in updated_data["device_config"]
