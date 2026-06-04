@@ -1,5 +1,9 @@
-"""Tests for Onna const address registry — fancoil entities."""
-from custom_components.onna.const import SENSOR_ADDRESSES, VALVE_ADDRESSES, FAN_ADDRESSES
+"""Tests for Onna legacy const address registry — fancoil entities."""
+from custom_components.onna.const import (
+    _LEGACY_SENSOR_ADDRESSES as SENSOR_ADDRESSES,
+    _LEGACY_VALVE_ADDRESSES as VALVE_ADDRESSES,
+    _LEGACY_FAN_ADDRESSES as FAN_ADDRESSES,
+)
 
 
 def test_fancoil_salon_is_registered_as_fan():

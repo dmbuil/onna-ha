@@ -40,9 +40,11 @@ SENSOR_KEYWORD_MAP: list[tuple] = [
     ("Temp.",       "°C", "temperature", "measurement"),
 ]
 
+# Legacy address maps — used only by async_migrate_entry (VERSION 1 → 2).
+# New installs derive these from the device's READ_CONFIGURATION payload.
 # KNX address map: id → (name, unit, device_class, state_class)
 # Sensors (numeric)
-SENSOR_ADDRESSES = {
+_LEGACY_SENSOR_ADDRESSES = {
     "0_5_3":  ("Potencia",               "W",    "power",              "measurement"),
     "0_5_2":  ("Tensión",                "V",    "voltage",            "measurement"),
     "0_5_4":  ("Intensidad",             "mA",   "current",            "measurement"),
@@ -71,7 +73,7 @@ SENSOR_ADDRESSES = {
 }
 
 # Binary sensors (boolean KNX addresses)
-BINARY_SENSOR_ADDRESSES = {
+_LEGACY_BINARY_SENSOR_ADDRESSES = {
     "0_4_2": ("Alarma Inundación",       "moisture",   False),
     "0_4_3": ("Alarma Incendio",         "smoke",      False),
     "0_0_7": ("Modo Invierno",           None,         False),
@@ -85,7 +87,7 @@ BINARY_SENSOR_ADDRESSES = {
 }
 
 # Valve entities (boolean KNX address, read-only state)
-VALVE_ADDRESSES = {
+_LEGACY_VALVE_ADDRESSES = {
     "0_0_5": ("EV Suelo Radiante",  "water"),
     "0_0_6": ("Válvulas Colector",  "water"),
     "1_5_1": ("Baño 1 Cabezal",    "water"),
@@ -96,7 +98,7 @@ VALVE_ADDRESSES = {
 # position_addr (1_X_8): PI demand 0-100 % (DPT 5.001) → current_valve_position
 # actuator_addr (1_X_6): zone actuator head open/closed (DPT 1.001) → is_closed
 # These are read-only from HA — the zone thermostats drive them automatically.
-VALVE_POSITION_ADDRESSES = {
+_LEGACY_VALVE_POSITION_ADDRESSES = {
     "1_0_8": ("Salón+Cocina Demanda Suelo",    "water", "1_0_6"),
     "1_1_8": ("Dorm. Principal Demanda Suelo", "water", "1_1_6"),
     "1_2_8": ("Dorm. 2 Demanda Suelo",         "water", "1_2_6"),
@@ -111,7 +113,7 @@ VALVE_POSITION_ADDRESSES = {
 # onoff_r     (1_X_1): thermostat ON/OFF state         → hvac_mode (read)
 # onoff_w     (1_X_0): thermostat ON/OFF               → write ON/OFF (HEAT/COOL are global)
 # demand_addr (1_X_7): underfloor demand state         → hvac_action
-CLIMATE_ADDRESSES = {
+_LEGACY_CLIMATE_ADDRESSES = {
     "zone_0": ("Salón+Cocina",    "1_0_4", "1_0_3", "1_0_2", "1_0_1", "1_0_0", "1_0_7"),
     "zone_1": ("Dorm. Principal", "1_1_4", "1_1_3", "1_1_2", "1_1_1", "1_1_0", "1_1_7"),
     "zone_2": ("Dorm. 2",         "1_2_4", "1_2_3", "1_2_2", "1_2_1", "1_2_0", "1_2_7"),
@@ -121,7 +123,7 @@ CLIMATE_ADDRESSES = {
 
 # Switch entities: id → (name,)
 # 1_7_10: Fancoil Salón Habilitar/Deshabilitar (write-only, DPT 1.001, no read-back)
-SWITCH_ADDRESSES = {
+_LEGACY_SWITCH_ADDRESSES = {
     "1_7_10": ("Fancoil Salón Habilitado",),
 }
 
@@ -144,7 +146,7 @@ SWITCH_ADDRESSES = {
 # To add a new zone override, add an entry below using the zone_X key from CLIMATE_ADDRESSES
 # and the full HA entity_id of the sensor (must expose a numeric state in °C).
 # To remove an override for a zone, simply delete its entry — no code changes needed.
-CLIMATE_TEMP_OVERRIDE: dict[str, str] = {
+_LEGACY_CLIMATE_TEMP_OVERRIDE: dict[str, str] = {
     "zone_0": "sensor.sonoff_ths_2_temperature",
     "zone_1": "sensor.sonoff_ths_1_temperature",
     "zone_2": "sensor.tuya_ths_3_temperature",
@@ -159,7 +161,7 @@ CLIMATE_TEMP_OVERRIDE: dict[str, str] = {
 #
 # Use HA binary_sensor entity_ids (door/window contact sensors, etc.).
 # To add a new zone, add an entry below using the zone_X key from CLIMATE_ADDRESSES.
-CLIMATE_WINDOW_SENSOR: dict[str, str] = {
+_LEGACY_CLIMATE_WINDOW_SENSOR: dict[str, str] = {
     "zone_0": "binary_sensor.0xa4c138f41f68d504_contact",   # Salón+Cocina
     "zone_1": "binary_sensor.0xa4c13897e98a6881_contact",   # Dorm. Principal
     # "zone_2": "binary_sensor.window_dorm_2",
@@ -172,6 +174,6 @@ CLIMATE_WINDOW_SENSOR: dict[str, str] = {
 # speed_address       (1_7_3): Fancoil speed 0-100 % — Onna-controlled (PI output).
 # speed_write_address (1_7_2): Speed write address — used by HA for manual override.
 # The valve is NOT written directly; Onna's AND-gate logic sets it from speed state automatically.
-FAN_ADDRESSES = {
+_LEGACY_FAN_ADDRESSES = {
     "fancoil_salon": ("Fancoil Salón", "1_7_1", "1_7_3", "1_7_2"),
 }

@@ -43,9 +43,13 @@ PLATFORMS = ["sensor", "binary_sensor", "valve", "fan", "climate", "switch"]
 def _legacy_device_config() -> dict:
     """Build device_config from hardcoded constants for VERSION 1 migration."""
     from .const import (
-        SENSOR_ADDRESSES, BINARY_SENSOR_ADDRESSES,
-        VALVE_ADDRESSES, VALVE_POSITION_ADDRESSES,
-        CLIMATE_ADDRESSES, SWITCH_ADDRESSES, FAN_ADDRESSES,
+        _LEGACY_SENSOR_ADDRESSES as SENSOR_ADDRESSES,
+        _LEGACY_BINARY_SENSOR_ADDRESSES as BINARY_SENSOR_ADDRESSES,
+        _LEGACY_VALVE_ADDRESSES as VALVE_ADDRESSES,
+        _LEGACY_VALVE_POSITION_ADDRESSES as VALVE_POSITION_ADDRESSES,
+        _LEGACY_CLIMATE_ADDRESSES as CLIMATE_ADDRESSES,
+        _LEGACY_SWITCH_ADDRESSES as SWITCH_ADDRESSES,
+        _LEGACY_FAN_ADDRESSES as FAN_ADDRESSES,
     )
     fan_addresses: dict = {}
     for fan_id, info in FAN_ADDRESSES.items():
