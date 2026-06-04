@@ -79,14 +79,14 @@ class OnnaConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     def async_get_options_flow(config_entry):
-        return OnnaOptionsFlow(config_entry)
+        return OnnaOptionsFlow()
 
 
 class OnnaOptionsFlow(OptionsFlow):
     """Two-step options flow: pick a zone, then configure its sensor overrides."""
 
-    def __init__(self, config_entry) -> None:
-        self.config_entry = config_entry
+    def __init__(self) -> None:
+        # config_entry is set by HA's framework on _config_entry; do NOT assign here.
         self._selected_zone: str | None = None
 
     async def async_step_init(
