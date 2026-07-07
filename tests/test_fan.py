@@ -16,6 +16,7 @@ def _make_coordinator(data=None):
         }
     }
     coord.client._onna_id = "TESTID"
+    coord.client.onna_id = "TESTID"
     coord.client.async_set_address_value = AsyncMock()
     return coord
 

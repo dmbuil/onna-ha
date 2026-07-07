@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 from custom_components.onna.switch import OnnaSwitch
 
 
+
 def _make_coordinator():
     coord = MagicMock()
     coord.data = {}
@@ -14,7 +15,11 @@ def _make_coordinator():
 
 
 def _make_switch():
-    return OnnaSwitch(_make_coordinator(), "1_7_10", "Fancoil Salón Habilitado")
+    sw = OnnaSwitch(_make_coordinator(), "1_7_10", "Fancoil Salón Habilitado")
+    # async_added_to_hass now subscribes to the connection signal.
+    sw.hass = MagicMock()
+    sw.async_on_remove = MagicMock()
+    return sw
 
 
 def test_initial_state_is_unknown():
@@ -55,3 +60,51 @@ async def test_toggle_on_then_off():
     assert sw.is_on is True
     await sw.async_turn_off()
     assert sw.is_on is False
+
+
+# ---------------------------------------------------------------------------
+# RestoreEntity — last known state
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_restore_on_state():
+    sw = _make_switch()
+    last = MagicMock()
+    last.state = "on"
+    sw.async_get_last_state = AsyncMock(return_value=last)
+    await sw.async_added_to_hass()
+    assert sw.is_on is True
+
+
+@pytest.mark.anyio
+async def test_restore_off_state():
+    sw = _make_switch()
+    last = MagicMock()
+    last.state = "off"
+    sw.async_get_last_state = AsyncMock(return_value=last)
+    await sw.async_added_to_hass()
+    assert sw.is_on is False
+
+
+@pytest.mark.anyio
+async def test_restore_skipped_when_unavailable():
+    sw = _make_switch()
+    last = MagicMock()
+    last.state = "unavailable"
+    sw.async_get_last_state = AsyncMock(return_value=last)
+    await sw.async_added_to_hass()
+    assert sw.is_on is None
+
+
+@pytest.mark.anyio
+async def test_restore_skipped_when_no_last_state():
+    sw = _make_switch()
+    sw.async_get_last_state = AsyncMock(return_value=None)
+    await sw.async_added_to_hass()
+    assert sw.is_on is None
+
+
+def test_switch_reports_assumed_state():
+    """Write-only address with no read-back — HA must render assumed-state UI."""
+    sw = _make_switch()
+    assert sw._attr_assumed_state is True

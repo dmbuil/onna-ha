@@ -54,7 +54,7 @@ VALVE_ADDRESSES = {
 }
 
 HOST     = "192.168.10.3"
-ONNA_ID  = "1HPNi16"
+ONNA_ID  = "ONNA_ID"
 PORT     = 4001
 LISTEN_S = 8           # seconds to wait after READ_CONFIGURATION
 

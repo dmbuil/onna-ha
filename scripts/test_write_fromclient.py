@@ -6,7 +6,7 @@ Escribe 25.5°C en 1_0_2. Confirma si 1_0_2 y 1_0_3 cambian.
 import socketio
 import time
 
-ONNA_ID    = "1HPNi16"
+ONNA_ID    = "ONNA_ID"
 WRITE_ADDR = "1_0_2"
 STATE_ADDR = "1_0_3"
 WRITE_VAL  = 25.5   # distinto de 25.0 actual

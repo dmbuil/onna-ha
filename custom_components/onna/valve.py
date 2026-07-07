@@ -23,6 +23,7 @@ from typing import Any
 
 from homeassistant.components.valve import ValveDeviceClass, ValveEntity, ValveEntityFeature
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -30,6 +31,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
+from .entity import OnnaEntity
 
 
 async def async_setup_entry(
@@ -52,7 +54,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class OnnaValve(ValveEntity, RestoreEntity):
+class OnnaValve(OnnaEntity, ValveEntity, RestoreEntity):
     """Simple boolean valve entity (open/closed) for installation-level valves.
 
     Covers:
@@ -85,15 +87,6 @@ class OnnaValve(ValveEntity, RestoreEntity):
     def is_closed(self) -> bool:
         return not self._is_open
 
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._coordinator.client._onna_id)},
-            "name": "Onna",
-            "manufacturer": "Opendomo Things S.L.",
-            "model": "Onna M Lite",
-        }
-
     async def async_added_to_hass(self) -> None:
         """Restore last valve state and subscribe to push updates."""
         if (last := await self.async_get_last_state()) is not None:
@@ -106,6 +99,7 @@ class OnnaValve(ValveEntity, RestoreEntity):
                 self._handle_update,
             )
         )
+        self._subscribe_connection_signal()
 
     @callback
     def _handle_update(self, value: Any) -> None:
@@ -114,7 +108,7 @@ class OnnaValve(ValveEntity, RestoreEntity):
         self.async_write_ha_state()
 
 
-class OnnaPositionValve(ValveEntity, RestoreEntity):
+class OnnaPositionValve(OnnaEntity, ValveEntity, RestoreEntity):
     """Per-zone underfloor heating valve with position and actuator state.
 
     Tracks two KNX addresses per zone:
@@ -162,15 +156,6 @@ class OnnaPositionValve(ValveEntity, RestoreEntity):
         """Return True when the actuator head is closed (zone off)."""
         return not self._cabezal_open
 
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._coordinator.client._onna_id)},
-            "name": "Onna",
-            "manufacturer": "Opendomo Things S.L.",
-            "model": "Onna M Lite",
-        }
-
     async def async_added_to_hass(self) -> None:
         """Restore last valve state and subscribe to both position and actuator pushes."""
         if (last := await self.async_get_last_state()) is not None:
@@ -192,13 +177,18 @@ class OnnaPositionValve(ValveEntity, RestoreEntity):
                 self._handle_cabezal_update,
             )
         )
+        self._subscribe_connection_signal()
 
     async def async_set_valve_position(self, position: int) -> None:
-        """No-op — valve position is controlled exclusively by Onna's PID loop.
+        """Reject writes — valve position is controlled exclusively by Onna's PID loop.
 
-        Declared so that HA renders the position slider in the UI for monitoring,
-        but any write from HA would be immediately overwritten by Onna's controller.
+        SET_POSITION is declared so HA renders the position in the UI, but a
+        write from HA would be immediately overwritten by Onna's controller, so
+        instead of silently ignoring the request we tell the user why.
         """
+        raise HomeAssistantError(
+            "Onna controla la posición de esta válvula automáticamente — no se puede fijar desde HA"
+        )
 
     @callback
     def _handle_position_update(self, value: Any) -> None:

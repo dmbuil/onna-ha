@@ -5,7 +5,7 @@ Shows: present/missing, readOnInit, persistent, and KNX type for each address.
 import asyncio, json, aiohttp
 
 HOST    = "192.168.10.3"
-ONNA_ID = "1HPNi16"
+ONNA_ID = "ONNA_ID"
 PORT    = 4001
 
 OUR_ADDRESSES = {

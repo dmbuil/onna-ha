@@ -5,7 +5,7 @@ Mientras corre: usa la app del móvil para cambiar el termostato.
 import socketio
 import time
 
-ONNA_ID    = "1HPNi16"
+ONNA_ID    = "ONNA_ID"
 WRITE_ADDR = "1_0_2"
 STATE_ADDR = "1_0_3"
 WRITE_VAL  = 25.5   # asumiendo que el termostato está en 25.0

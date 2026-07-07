@@ -21,6 +21,14 @@ DOMAIN = "onna"
 CONF_HOST    = "host"
 CONF_ONNA_ID = "onna_id"
 
+# Tunable via the options flow ("General settings"); these are the defaults.
+# Minimum compensated-setpoint change (°C) that triggers a new KNX write —
+# prevents external-sensor noise from flooding the bus.
+DEFAULT_SETPOINT_HYSTERESIS = 0.5
+# Seconds a window must stay open before its zone thermostat is paused —
+# prevents brief ventilation events from toggling the heating.
+DEFAULT_WINDOW_OPEN_DELAY = 600
+
 # Maps unit suffix found in address names (e.g. "(W)") →
 # (ha_unit, ha_device_class, ha_state_class).  Used by config_parser.
 SENSOR_UNIT_SUFFIXES: dict[str, tuple] = {

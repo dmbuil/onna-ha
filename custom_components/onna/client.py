@@ -16,7 +16,10 @@ Relevant packet types we handle:
   "40" — SIO connect  (server → client; signals namespace "/" is ready)
   "42" — SIO event    (bidirectional; carries ["EVENT_NAME", {…}])
   "421nn" — SIO ack   (server → client; "431…" is ack for our READ_CONFIGURATION)
-  "2"  — EIO ping     (server → client; we must respond with "3")
+  "2"/"3" — EIO ping/pong.  In EIO v3 the CLIENT pings: we send "2" every
+            pingInterval (announced in the open frame) and the server answers
+            "3".  Missing pings make the server drop the session after
+            pingInterval+pingTimeout (Onna: 10 s + 5 s).
 
 Relevant KNX events:
   SET_ADDRESS_VALUE_FROM_SERVER {id, value} — live push from device to HA
@@ -33,13 +36,26 @@ import json
 import logging
 from collections import defaultdict
 from typing import Any, Callable, Coroutine
+from urllib.parse import quote
 
 try:
     import websockets  # optional dep — only needed at runtime
 except ImportError:  # pragma: no cover
     websockets = None  # type: ignore[assignment]
 
+try:
+    from homeassistant.exceptions import HomeAssistantError
+except ImportError:  # pragma: no cover — recon scripts run outside HA
+    class HomeAssistantError(Exception):  # type: ignore[no-redef]
+        """Fallback so this module stays importable without Home Assistant."""
+
 _LOGGER = logging.getLogger(__name__)
+
+# Exceptions that async_fetch_config translates into CannotConnect.  Anything
+# else (programming errors) propagates so bugs aren't masked as "cannot_connect".
+_FETCH_ERRORS: tuple = (OSError, asyncio.TimeoutError, json.JSONDecodeError, ValueError, EOFError)
+if websockets is not None:
+    _FETCH_ERRORS += (websockets.WebSocketException,)
 
 # Socket.IO v2 packet-type prefixes we build or parse.
 _SIO_EVENT_PREFIX = "42"   # regular event frame
@@ -69,7 +85,7 @@ class OnnaClient:
 
     Usage::
 
-        client = OnnaClient(host="192.168.10.3", onna_id="1HPNi16")
+        client = OnnaClient(host="192.168.10.3", onna_id="ONNA_ID")
         client.register_address_callback("1_0_4", my_callback)
         await client.connect()   # blocks — runs the receive loop; auto-reconnects
     """
@@ -92,10 +108,60 @@ class OnnaClient:
         # Not live KNX telegrams — populated once per connection.  Used by the
         # coordinator to seed synthetic addresses (e.g. cfg_internal_offset).
         self.config_settings: dict[str, Any] = {}
+        # True between a completed handshake and the connection dropping.
+        # The coordinator mirrors this into entity availability.
+        self.connected: bool = False
+        # Optional sync callback fired with the new state on every transition.
+        self.on_connection_change: Callable[[bool], None] | None = None
+        # Pending INIT_COLLECT_S timer task (see _schedule_ready).
+        self._ready_task: asyncio.Task | None = None
+
+    @property
+    def onna_id(self) -> str:
+        """Public device identifier (used by entities for device_info)."""
+        return self._onna_id
+
+    def _set_connected(self, value: bool) -> None:
+        """Update the connection flag and notify the coordinator on transitions."""
+        if self.connected == value:
+            return
+        self.connected = value
+        if self.on_connection_change is not None:
+            self.on_connection_change(value)
 
     # ------------------------------------------------------------------
     # Static helpers (pure, testable without a live connection)
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_url(host: str, port: int, onna_id: str) -> str:
+        """Build the Socket.IO WebSocket URL with both inputs URL-encoded.
+
+        The config flow already validates the characters, but encoding here is
+        defense in depth: a crafted host or onna_id can never alter the URL
+        structure or inject extra query parameters.
+        """
+        return (
+            f"ws://{quote(host, safe='')}:{port}/socket.io/"
+            f"?EIO=3&transport=websocket&onnaId={quote(onna_id, safe='')}"
+        )
+
+    @staticmethod
+    def _parse_ping_interval(open_frame: str) -> float:
+        """Extract pingInterval (in seconds) from the EIO open frame ``0{…}``.
+
+        Engine.IO v3 requires the *client* to send a ping ("2") every
+        pingInterval; the server replies pong ("3") and drops the session
+        after pingInterval+pingTimeout without one (Onna: 10 s + 5 s = the
+        15-second disconnect loop observed before this existed).
+
+        Falls back to a conservative 5 s when the frame is malformed —
+        pinging too often is harmless, too rarely kills the connection.
+        """
+        try:
+            return float(json.loads(open_frame[1:])["pingInterval"]) / 1000.0
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError, IndexError):
+            return 5.0
 
     @staticmethod
     def parse_sio_event(frame: str) -> tuple[str, dict] | None:
@@ -157,10 +223,9 @@ class OnnaClient:
 
         Raises CannotConnect on timeout or any connection error.
         """
-        url = (
-            f"ws://{host}:{port}/socket.io/"
-            f"?EIO=3&transport=websocket&onnaId={onna_id}"
-        )
+        if websockets is None:
+            raise CannotConnect("the 'websockets' library is not installed")
+        url = cls._build_url(host, port, onna_id)
         try:
             async with websockets.connect(url) as ws:
                 await asyncio.wait_for(ws.recv(), timeout=timeout)   # EIO open
@@ -176,7 +241,7 @@ class OnnaClient:
                         if isinstance(payload, list) and payload and isinstance(payload[0], dict):
                             return payload[0]
                         return {}
-        except Exception as exc:
+        except _FETCH_ERRORS as exc:
             raise CannotConnect(str(exc)) from exc
 
     # ------------------------------------------------------------------
@@ -252,10 +317,11 @@ class OnnaClient:
     async def async_set_address_value(self, address_id: str, value: Any) -> None:
         """Write ``value`` to the KNX group address ``address_id`` via Onna.
 
-        Raises RuntimeError if called before a WebSocket connection is open.
+        Raises HomeAssistantError if called before a WebSocket connection is
+        open, so HA service calls surface a proper user-facing error.
         """
         if self._ws is None:
-            raise RuntimeError("Not connected")
+            raise HomeAssistantError("Onna is not connected — cannot write KNX value")
         frame = self.build_set_address_value(address_id, value)
         await self._ws.send(frame)
 
@@ -268,20 +334,29 @@ class OnnaClient:
 
         Loops forever via ``websockets.connect``'s reconnect iterator; each
         connection loss is logged and the loop restarts automatically.
+
+        Any exception from a single connection lifetime (handshake timeout,
+        connection closed, a bug in a frame handler) is logged and the loop
+        moves on to the next connection attempt — only task cancellation
+        (integration unload) escapes.
         """
-        url = (
-            f"ws://{self._host}:{self._port}/socket.io/"
-            f"?EIO=3&transport=websocket&onnaId={self._onna_id}"
-        )
-        _LOGGER.debug("Connecting to %s", url)
+        url = self._build_url(self._host, self._port, self._onna_id)
+        # Deliberately not logging the full URL: the onnaId query parameter is
+        # the device's only credential.
+        _LOGGER.debug("Connecting to Onna at %s:%s", self._host, self._port)
 
         async for ws in websockets.connect(url):
             self._ws = ws
             try:
                 await self._run(ws)
-            except websockets.ConnectionClosed:
-                _LOGGER.warning("Onna connection closed — reconnecting")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — transport must outlive any error
+                _LOGGER.warning("Onna connection lost (%s: %s) — reconnecting",
+                                type(exc).__name__, exc)
+            finally:
                 self._ws = None
+                self._set_connected(False)
 
     def _schedule_ready(self) -> None:
         """Fire initial_ready after INIT_COLLECT_S seconds in the background.
@@ -295,7 +370,32 @@ class OnnaClient:
             await asyncio.sleep(self.INIT_COLLECT_S)
             self.initial_ready.set()
 
-        asyncio.ensure_future(_set_ready())
+        self._ready_task = asyncio.ensure_future(_set_ready())
+
+    async def async_shutdown(self) -> None:
+        """Cancel the pending ready timer (called on integration unload)."""
+        if self._ready_task is not None and not self._ready_task.done():
+            self._ready_task.cancel()
+            try:
+                await self._ready_task
+            except asyncio.CancelledError:
+                pass
+        self._ready_task = None
+
+    async def _ping_loop(self, ws: Any, interval: float) -> None:
+        """EIO v3 keepalive: send a ping ("2") every pingInterval seconds.
+
+        Without this the server drops the session after
+        pingInterval+pingTimeout (Onna: every 15 s).  A failed send means the
+        connection is going down — exit quietly and let the receive loop
+        handle the reconnect.
+        """
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                await ws.send("2")
+        except Exception:  # noqa: BLE001 — connection teardown races are expected here
+            return
 
     async def _run(self, ws: Any) -> None:
         """Inner receive loop for a single WebSocket connection lifetime.
@@ -305,12 +405,14 @@ class OnnaClient:
           2. Server sends SIO "40" namespace-connect frame for "/" namespace.
           3. We send READ_CONFIGURATION (ack frame "421[…]"); Onna replies
              with "431[…]" carrying the full device state.
-          4. Normal operation: server pushes "42[…]" event frames; we respond
-             to "2" (EIO ping) with "3" (EIO pong) to keep the connection alive.
+          4. Normal operation: server pushes "42[…]" event frames.  We send an
+             EIO ping ("2") every pingInterval (client pings in EIO v3) and
+             answer any server ping with a pong ("3") for good measure.
         """
         # Step 1: consume the EIO open frame (contains session id, ping interval).
         open_frame = await asyncio.wait_for(ws.recv(), timeout=5)
         _LOGGER.debug("EIO open: %s", open_frame[:80])
+        ping_interval = self._parse_ping_interval(open_frame)
 
         # Step 2: server sends "40" (SIO namespace connect) automatically.
         ns_frame = await asyncio.wait_for(ws.recv(), timeout=5)
@@ -319,10 +421,26 @@ class OnnaClient:
         # Step 3: request full device state; start the ready timer concurrently.
         await ws.send(self.build_read_configuration())
         self._schedule_ready()
+        self._set_connected(True)
 
-        # Step 4: normal receive loop.
-        async for raw in ws:
-            if raw == "2":  # EIO ping — must pong within ping_timeout or server disconnects
-                await ws.send("3")
-                continue
-            await self._process_frame(raw)
+        # Step 4: normal receive loop.  A failing frame handler (e.g. an entity
+        # callback choking on an unexpected payload) must not tear down the
+        # connection, so per-frame errors are logged and swallowed here.
+        ping_task = asyncio.ensure_future(self._ping_loop(ws, ping_interval))
+        try:
+            async for raw in ws:
+                if raw == "2":  # server ping (defensive — EIO v3 servers shouldn't)
+                    await ws.send("3")
+                    continue
+                if raw == "3":  # pong answering our ping — keepalive confirmed
+                    continue
+                try:
+                    await self._process_frame(raw)
+                except Exception:  # noqa: BLE001 — one bad frame must not kill the loop
+                    _LOGGER.exception("Error processing Onna frame: %s", raw[:120])
+        finally:
+            ping_task.cancel()
+            try:
+                await ping_task
+            except asyncio.CancelledError:
+                pass

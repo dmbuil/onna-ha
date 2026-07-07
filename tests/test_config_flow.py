@@ -20,7 +20,7 @@ def _valid_payload():
     return json.loads(_FIXTURE.read_text())
 
 
-_VALID = {CONF_HOST: "192.168.10.3", CONF_ONNA_ID: "1HPNi16"}
+_VALID = {CONF_HOST: "192.168.10.3", CONF_ONNA_ID: "ONNA_ID"}
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ async def test_user_step_stores_host_and_onna_id():
     ):
         result = await flow.async_step_user(user_input=_VALID)
     assert result["data"][CONF_HOST] == "192.168.10.3"
-    assert result["data"][CONF_ONNA_ID] == "1HPNi16"
+    assert result["data"][CONF_ONNA_ID] == "ONNA_ID"
 
 
 @pytest.mark.anyio
@@ -143,3 +143,71 @@ async def test_step_discover_returns_form_error_on_empty_config():
 
     assert result["type"] == "form"
     assert result["errors"].get("base") == "no_devices_found"
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-entry protection via unique_id
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_user_step_sets_unique_id_and_checks_for_duplicates():
+    from unittest.mock import AsyncMock
+    flow = _flow()
+    flow.async_set_unique_id = AsyncMock()
+    flow._abort_if_unique_id_configured = MagicMock()
+    with patch(
+        "custom_components.onna.config_flow.OnnaClient.async_fetch_config",
+        return_value=_valid_payload(),
+    ):
+        result = await flow.async_step_user(user_input=_VALID)
+    assert result["type"] == "create_entry"
+    flow.async_set_unique_id.assert_called_once_with("ONNA_ID")
+    flow._abort_if_unique_id_configured.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Input validation — reject malformed host / onna_id, not just empty ones
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_user_step_rejects_host_with_url_metacharacters():
+    flow = _flow()
+    result = await flow.async_step_user(
+        user_input={CONF_HOST: "192.168.1.5/path?x=1", CONF_ONNA_ID: "ONNA_ID"}
+    )
+    assert result["type"] == "form"
+    assert result["errors"] == {CONF_HOST: "invalid_host"}
+
+
+@pytest.mark.anyio
+async def test_user_step_rejects_host_with_spaces():
+    flow = _flow()
+    result = await flow.async_step_user(
+        user_input={CONF_HOST: "192.168.1.5 --evil", CONF_ONNA_ID: "ONNA_ID"}
+    )
+    assert result["type"] == "form"
+    assert result["errors"] == {CONF_HOST: "invalid_host"}
+
+
+@pytest.mark.anyio
+async def test_user_step_rejects_onna_id_with_metacharacters():
+    flow = _flow()
+    result = await flow.async_step_user(
+        user_input={CONF_HOST: "192.168.1.5", CONF_ONNA_ID: "abc&def=1"}
+    )
+    assert result["type"] == "form"
+    assert result["errors"] == {CONF_ONNA_ID: "invalid_onna_id"}
+
+
+@pytest.mark.anyio
+async def test_user_step_accepts_hostname():
+    """mDNS-style hostnames must remain valid."""
+    flow = _flow()
+    with patch(
+        "custom_components.onna.config_flow.OnnaClient.async_fetch_config",
+        return_value=_valid_payload(),
+    ):
+        result = await flow.async_step_user(
+            user_input={CONF_HOST: "onna.local", CONF_ONNA_ID: "ONNA_ID"}
+        )
+    assert result["type"] == "create_entry"

@@ -67,11 +67,37 @@ def _legacy_device_config() -> dict:
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Migrate config entries from VERSION 1 (no device_config) to VERSION 2."""
-    if entry.version == 1:
-        new_data = {**entry.data, "device_config": _legacy_device_config()}
-        hass.config_entries.async_update_entry(entry, data=new_data, version=2)
+    """Migrate config entries up to VERSION 3.
+
+    v1 → v2: add device_config to entry.data.
+    v2 → v3: backfill climate sensor overrides into entry.options (the v1→v2 migration
+             forgot to do this, so existing installs lost their hardcoded overrides).
+    """
+    from .const import _LEGACY_CLIMATE_TEMP_OVERRIDE, _LEGACY_CLIMATE_WINDOW_SENSOR
+
+    cur = entry.version
+    new_data = dict(entry.data)
+    new_opts = dict(entry.options)
+
+    if cur < 2:
+        new_data["device_config"] = _legacy_device_config()
+        new_opts.setdefault("climate_temp_override", dict(_LEGACY_CLIMATE_TEMP_OVERRIDE))
+        new_opts.setdefault("climate_window_sensor", dict(_LEGACY_CLIMATE_WINDOW_SENSOR))
+        cur = 2
+
+    if cur == 2:
+        # Entries that reached v2 without options populated (the original migration bug).
+        new_opts.setdefault("climate_temp_override", dict(_LEGACY_CLIMATE_TEMP_OVERRIDE))
+        new_opts.setdefault("climate_window_sensor", dict(_LEGACY_CLIMATE_WINDOW_SENSOR))
+        cur = 3
+
+    hass.config_entries.async_update_entry(entry, data=new_data, options=new_opts, version=cur)
     return True
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry when options change so new sensor overrides take effect."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -86,6 +112,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await coordinator.async_start()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
 

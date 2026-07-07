@@ -6,7 +6,7 @@ Confirmación: si 1_0_2 y 1_0_3 cambian a 25.5 = ÉXITO.
 import socketio
 import time
 
-ONNA_ID       = "1HPNi16"
+ONNA_ID       = "ONNA_ID"
 WRITE_ADDR    = "1_0_2"
 STATUS_ADDR   = "1_0_3"
 WRITE_VALUE   = 25.5   # Desde 25.0 → detectamos el cambio

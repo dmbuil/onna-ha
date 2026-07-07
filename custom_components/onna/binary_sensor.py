@@ -37,6 +37,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
+from .entity import OnnaEntity
 
 
 async def async_setup_entry(
@@ -54,7 +55,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class OnnaBinarySensor(BinarySensorEntity, RestoreEntity):
+class OnnaBinarySensor(OnnaEntity, BinarySensorEntity, RestoreEntity):
     """Binary KNX sensor that mirrors a single Onna group address.
 
     Supports optional value inversion for active-low KNX addresses.
@@ -88,15 +89,6 @@ class OnnaBinarySensor(BinarySensorEntity, RestoreEntity):
     def is_on(self) -> bool:
         return self._attr_is_on
 
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._coordinator.client._onna_id)},
-            "name": "Onna",
-            "manufacturer": "Opendomo Things S.L.",
-            "model": "Onna M Lite",
-        }
-
     async def async_added_to_hass(self) -> None:
         """Restore last known state and subscribe to dispatcher updates.
 
@@ -113,6 +105,7 @@ class OnnaBinarySensor(BinarySensorEntity, RestoreEntity):
                 self._handle_update,
             )
         )
+        self._subscribe_connection_signal()
 
     @callback
     def _handle_update(self, value: Any) -> None:

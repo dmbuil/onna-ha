@@ -5,7 +5,7 @@ Escribe 24.0°C en 1_0_2 (Salón+Cocina consigna) y observa 1_0_3 (estado).
 import socketio
 import time
 
-ONNA_ID = "1HPNi16"
+ONNA_ID = "ONNA_ID"
 
 SETPOINT_ADDR  = "1_0_2"   # consigna (write)
 SETPOINT_STATE = "1_0_3"   # consigna estado (readOnInit=true)

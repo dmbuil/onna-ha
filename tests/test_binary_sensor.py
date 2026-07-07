@@ -11,6 +11,7 @@ def _make_coordinator(data=None):
     coord = MagicMock()
     coord.data = data or {}
     coord.client._onna_id = "TESTID"
+    coord.client.onna_id = "TESTID"
     return coord
 
 

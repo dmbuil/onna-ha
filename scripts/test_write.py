@@ -12,7 +12,7 @@ import websockets
 
 HOST      = "192.168.10.3"
 PORT      = 4001
-ONNA_ID   = "1HPNi16"
+ONNA_ID   = "ONNA_ID"
 
 WRITE_ADDR  = "1_0_2"
 STATUS_ADDR = "1_0_3"

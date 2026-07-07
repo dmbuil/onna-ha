@@ -15,8 +15,8 @@
       }
     },
     "error": {
-      "invalid_host": "La dirección IP no puede estar vacía.",
-      "invalid_onna_id": "El Onna ID no puede estar vacío.",
+      "invalid_host": "Introduce una dirección IP o nombre de host válido (solo letras, números, puntos y guiones).",
+      "invalid_onna_id": "Introduce un Onna ID válido (solo letras, números, guiones y guiones bajos).",
       "cannot_connect": "No se pudo conectar al dispositivo. Comprueba que la IP es correcta, que el Onna está encendido y accesible desde este servidor.",
       "no_devices_found": "El dispositivo respondió pero no devolvió ninguna zona de climatización configurada. Comprueba la configuración en la app Onna."
     },
@@ -46,6 +46,24 @@
         "data_description": {
           "temp_sensor": "Entidad HA de tipo sensor (dominio sensor) que mide la temperatura real de la habitación en °C. Al configurarlo, la temperatura mostrada en HA y el punto de ajuste enviado al bus KNX se corrigen automáticamente para compensar la diferencia entre la sonda interna del termostato y la temperatura real. Si este sensor queda no disponible, la integración vuelve a usar la sonda interna sin interrupciones.",
           "window_sensor": "Entidad HA de tipo sensor binario (dominio binary_sensor) asociada a un detector de apertura de ventana o puerta. Cuando el sensor reporta 'on' (abierto) durante más de 10 minutos, la zona se apaga automáticamente para ahorrar energía. La zona se reactiva en cuanto se detecta el cierre. Las zonas que ya estaban apagadas manualmente no se ven afectadas."
+        }
+      },
+      "init": {
+        "menu_options": {
+          "zone_picker": "Sensores por zona (temperatura externa / ventana)",
+          "general": "Ajustes generales (histéresis, retardo de ventana)"
+        }
+      },
+      "general": {
+        "title": "Onna — ajustes generales",
+        "description": "Ajustes de toda la instalación. Estos valores se aplican a todas las zonas de climatización.",
+        "data": {
+          "setpoint_hysteresis": "Histéresis de consigna (°C)",
+          "window_open_delay": "Retardo de ventana abierta (segundos)"
+        },
+        "data_description": {
+          "setpoint_hysteresis": "Cambio mínimo de la consigna compensada antes de escribir un nuevo valor en el bus KNX. Valores bajos siguen el sensor externo con más fidelidad pero generan más tráfico en el bus; valores altos reducen el tráfico a costa de precisión. Por defecto: 0,5 °C.",
+          "window_open_delay": "Tiempo que una ventana debe permanecer abierta antes de pausar el termostato de su zona. Las ventilaciones breves por debajo de este tiempo se ignoran. Por defecto: 600 segundos (10 minutos)."
         }
       }
     }

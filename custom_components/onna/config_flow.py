@@ -1,15 +1,28 @@
 """Config flow and options flow for the Onna integration."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, OptionsFlow
-from homeassistant.helpers.selector import EntitySelector, EntitySelectorConfig
+from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+)
 
 from .client import CannotConnect, OnnaClient
 from .config_parser import parse_device_config
-from .const import CONF_HOST, CONF_ONNA_ID, DOMAIN
+from .const import (
+    CONF_HOST,
+    CONF_ONNA_ID,
+    DEFAULT_SETPOINT_HYSTERESIS,
+    DEFAULT_WINDOW_OPEN_DELAY,
+    DOMAIN,
+)
 
 _SCHEMA = vol.Schema(
     {
@@ -18,9 +31,15 @@ _SCHEMA = vol.Schema(
     }
 )
 
+# IP addresses or hostnames (e.g. onna.local) — no URL metacharacters, so the
+# value can never alter the WebSocket URL structure built in client.py.
+_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+# Device IDs are alphanumeric (e.g. "ONNA_ID"); allow - and _ to be safe.
+_ONNA_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
 
 class OnnaConfigFlow(ConfigFlow, domain=DOMAIN):
-    VERSION = 2
+    VERSION = 3
 
     def __init__(self) -> None:
         self._pending_host: str = ""
@@ -32,13 +51,19 @@ class OnnaConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            if not user_input.get(CONF_HOST, "").strip():
+            host = user_input.get(CONF_HOST, "").strip()
+            onna_id = user_input.get(CONF_ONNA_ID, "").strip()
+            if not _HOST_RE.match(host):
                 errors[CONF_HOST] = "invalid_host"
-            elif not user_input.get(CONF_ONNA_ID, "").strip():
+            elif not _ONNA_ID_RE.match(onna_id):
                 errors[CONF_ONNA_ID] = "invalid_onna_id"
             else:
-                self._pending_host = user_input[CONF_HOST].strip()
-                self._pending_onna_id = user_input[CONF_ONNA_ID].strip()
+                self._pending_host = host
+                self._pending_onna_id = onna_id
+                # The onna_id uniquely identifies the device — abort if an
+                # entry for it already exists instead of creating a duplicate.
+                await self.async_set_unique_id(self._pending_onna_id)
+                self._abort_if_unique_id_configured()
                 return await self.async_step_discover()
 
         return self.async_show_form(
@@ -83,7 +108,7 @@ class OnnaConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class OnnaOptionsFlow(OptionsFlow):
-    """Two-step options flow: pick a zone, then configure its sensor overrides."""
+    """Options flow: a menu leading to per-zone sensor overrides or general tuning."""
 
     def __init__(self) -> None:
         # config_entry is set by HA's framework on _config_entry; do NOT assign here.
@@ -92,7 +117,44 @@ class OnnaOptionsFlow(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        return await self.async_step_zone_picker(user_input)
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=["zone_picker", "general"],
+        )
+
+    async def async_step_general(
+        self, user_input: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Installation-wide tuning: setpoint hysteresis and window-open delay."""
+        if user_input is not None:
+            return self.async_create_entry(
+                data={
+                    **dict(self.config_entry.options),
+                    "setpoint_hysteresis": float(user_input["setpoint_hysteresis"]),
+                    "window_open_delay": int(user_input["window_open_delay"]),
+                }
+            )
+
+        opts = self.config_entry.options
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    "setpoint_hysteresis",
+                    default=opts.get("setpoint_hysteresis", DEFAULT_SETPOINT_HYSTERESIS),
+                ): NumberSelector(NumberSelectorConfig(
+                    min=0.1, max=5.0, step=0.1,
+                    unit_of_measurement="°C", mode=NumberSelectorMode.BOX,
+                )),
+                vol.Optional(
+                    "window_open_delay",
+                    default=opts.get("window_open_delay", DEFAULT_WINDOW_OPEN_DELAY),
+                ): NumberSelector(NumberSelectorConfig(
+                    min=10, max=3600, step=10,
+                    unit_of_measurement="s", mode=NumberSelectorMode.BOX,
+                )),
+            }
+        )
+        return self.async_show_form(step_id="general", data_schema=schema)
 
     async def async_step_zone_picker(
         self, user_input: dict[str, Any] | None = None
@@ -140,15 +202,25 @@ class OnnaOptionsFlow(OptionsFlow):
 
         zone_id = self._selected_zone
         current_opts = self.config_entry.options
+        # suggested_value (not default=) so a cleared picker stays absent from
+        # the submitted data instead of being refilled with the stored entity.
         schema = vol.Schema(
             {
                 vol.Optional(
                     "temp_sensor",
-                    default=current_opts.get("climate_temp_override", {}).get(zone_id, ""),
+                    description={
+                        "suggested_value": current_opts.get(
+                            "climate_temp_override", {}
+                        ).get(zone_id)
+                    },
                 ): EntitySelector(EntitySelectorConfig(domain="sensor")),
                 vol.Optional(
                     "window_sensor",
-                    default=current_opts.get("climate_window_sensor", {}).get(zone_id, ""),
+                    description={
+                        "suggested_value": current_opts.get(
+                            "climate_window_sensor", {}
+                        ).get(zone_id)
+                    },
                 ): EntitySelector(EntitySelectorConfig(domain="binary_sensor")),
             }
         )

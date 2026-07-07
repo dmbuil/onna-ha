@@ -19,10 +19,14 @@ class _Required(str):
     pass
 
 
+_UNDEFINED = object()  # mirrors vol.UNDEFINED: distinguishes "no default" from default=None
+
+
 class _Optional:
-    def __init__(self, name, default=None, **kwargs):
+    def __init__(self, name, default=_UNDEFINED, description=None, **kwargs):
         self._name = name
         self.default = default
+        self.description = description
 
     def __str__(self):
         return self._name
@@ -42,9 +46,21 @@ class _Schema:
         self.schema = schema_dict
 
     def __call__(self, data):
-        return data
+        # Real voluptuous injects each Optional's default for absent keys —
+        # this is how HA's FlowManager sees submitted form data.
+        result = dict(data)
+        if isinstance(self.schema, dict):
+            for key in self.schema:
+                if (
+                    isinstance(key, _Optional)
+                    and key.default is not _UNDEFINED
+                    and str(key) not in result
+                ):
+                    result[str(key)] = key.default
+        return result
 
 
+vol_mod.UNDEFINED = _UNDEFINED
 vol_mod.Required = _Required
 vol_mod.Optional = _Optional
 vol_mod.Schema = _Schema
@@ -56,6 +72,16 @@ core_mod = _make_module("homeassistant")
 core_mod = _make_module("homeassistant.core")
 core_mod.HomeAssistant = MagicMock
 core_mod.callback = lambda f: f          # identity decorator
+
+# ---- homeassistant.exceptions ----
+exc_mod = _make_module("homeassistant.exceptions")
+
+
+class _HomeAssistantError(Exception):
+    pass
+
+
+exc_mod.HomeAssistantError = _HomeAssistantError
 
 # ---- homeassistant.config_entries ----
 ce_mod = _make_module("homeassistant.config_entries")
@@ -71,6 +97,12 @@ class _ConfigFlow:
 
     async def async_step_user(self, user_input=None):
         raise NotImplementedError
+
+    async def async_set_unique_id(self, unique_id):
+        self.unique_id = unique_id
+
+    def _abort_if_unique_id_configured(self):
+        pass
 
     def async_show_form(self, *, step_id, data_schema, errors=None):
         return {"type": "form", "step_id": step_id, "data_schema": data_schema, "errors": errors or {}}
@@ -104,6 +136,24 @@ restore_mod.RestoreEntity = _RestoreEntity
 # ---- homeassistant.components.sensor ----
 _make_module("homeassistant.components")
 sensor_mod = _make_module("homeassistant.components.sensor")
+
+# ---- homeassistant.components.diagnostics ----
+diag_mod = _make_module("homeassistant.components.diagnostics")
+
+
+def _async_redact_data(data, to_redact):
+    """Mirror HA's recursive redaction helper closely enough for tests."""
+    if isinstance(data, dict):
+        return {
+            k: "**REDACTED**" if k in to_redact else _async_redact_data(v, to_redact)
+            for k, v in data.items()
+        }
+    if isinstance(data, list):
+        return [_async_redact_data(item, to_redact) for item in data]
+    return data
+
+
+diag_mod.async_redact_data = _async_redact_data
 
 
 class _SensorDeviceClass(str, Enum):
@@ -412,6 +462,9 @@ class _OptionsFlow:
     def async_show_form(self, *, step_id, data_schema, errors=None):
         return {"type": "form", "step_id": step_id, "data_schema": data_schema, "errors": errors or {}}
 
+    def async_show_menu(self, *, step_id, menu_options):
+        return {"type": "menu", "step_id": step_id, "menu_options": menu_options}
+
     def async_create_entry(self, *, title="", data):
         return {"type": "create_entry", "data": data}
 
@@ -429,5 +482,23 @@ class _EntitySelector:
     def __init__(self, config=None):
         self.config = config
 
+class _NumberSelectorConfig:
+    def __init__(self, **kwargs):
+        self._kwargs = kwargs
+
+
+class _NumberSelector:
+    def __init__(self, config=None):
+        self.config = config
+
+
+class _NumberSelectorMode(str, Enum):
+    BOX = "box"
+    SLIDER = "slider"
+
+
 sel_mod.EntitySelectorConfig = _EntitySelectorConfig
 sel_mod.EntitySelector = _EntitySelector
+sel_mod.NumberSelectorConfig = _NumberSelectorConfig
+sel_mod.NumberSelector = _NumberSelector
+sel_mod.NumberSelectorMode = _NumberSelectorMode

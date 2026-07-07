@@ -37,6 +37,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
 from .coordinator import OnnaCoordinator
+from .entity import OnnaEntity
 
 
 async def async_setup_entry(
@@ -53,7 +54,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class OnnaSwitch(SwitchEntity, RestoreEntity):
+class OnnaSwitch(OnnaEntity, SwitchEntity, RestoreEntity):
     """Write-only KNX switch — state tracked locally after each write.
 
     Onna does not echo write-only addresses back, so this entity cannot use
@@ -66,6 +67,9 @@ class OnnaSwitch(SwitchEntity, RestoreEntity):
 
     _attr_has_entity_name = True
     _attr_should_poll = False
+    # No read-back exists for this address — state is optimistic, so tell HA
+    # to render the assumed-state UI (two buttons) instead of a toggle.
+    _attr_assumed_state = True
 
     def __init__(self, coordinator: OnnaCoordinator, address_id: str, name: str) -> None:
         self._coordinator    = coordinator
@@ -80,19 +84,11 @@ class OnnaSwitch(SwitchEntity, RestoreEntity):
         if (last := await self.async_get_last_state()) is not None:
             if last.state not in ("unavailable", "unknown"):
                 self._is_on = last.state == "on"
+        self._subscribe_connection_signal()
 
     @property
     def is_on(self) -> bool | None:
         return self._is_on
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._coordinator.client._onna_id)},
-            "name": "Onna",
-            "manufacturer": "Opendomo Things S.L.",
-            "model": "Onna M Lite",
-        }
 
     async def async_turn_on(self, **kwargs) -> None:
         """Enable the fancoil — Onna resumes PI control on next demand cycle."""

@@ -10,6 +10,7 @@ def _make_coordinator(data=None):
     coord = MagicMock()
     coord.data = data or {}
     coord.client._onna_id = "TESTID"
+    coord.client.onna_id = "TESTID"
     return coord
 
 
@@ -181,3 +182,13 @@ async def test_position_valve_restore_skipped_when_no_last_state():
         await valve.async_added_to_hass()
     assert valve.current_valve_position == 30
     assert valve.is_closed is True  # unchanged from coordinator seed
+
+
+@pytest.mark.anyio
+async def test_set_valve_position_raises_instead_of_silently_ignoring():
+    """Onna's PID owns the position; HA writes must fail loudly, not no-op."""
+    from homeassistant.exceptions import HomeAssistantError
+    coord = _make_coordinator()
+    valve = OnnaPositionValve(coord, "1_0_8", "1_0_6", "Salón Demanda Suelo", "water")
+    with pytest.raises(HomeAssistantError):
+        await valve.async_set_valve_position(50)

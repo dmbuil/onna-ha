@@ -15,8 +15,8 @@
       }
     },
     "error": {
-      "invalid_host": "IP address cannot be empty.",
-      "invalid_onna_id": "Onna ID cannot be empty.",
+      "invalid_host": "Enter a valid IP address or hostname (letters, digits, dots and hyphens only).",
+      "invalid_onna_id": "Enter a valid Onna ID (letters, digits, hyphens and underscores only).",
       "cannot_connect": "Could not connect to the device. Check that the IP address is correct and that the Onna is powered on and reachable from this server.",
       "no_devices_found": "The device responded but returned no configured climate zones. Check the configuration in the Onna app."
     },
@@ -46,6 +46,24 @@
         "data_description": {
           "temp_sensor": "A HA sensor entity (sensor domain) measuring the actual room temperature in °C. Once set, the temperature displayed in HA and the setpoint sent to the KNX bus are automatically corrected to compensate for the difference between the thermostat's built-in probe and the real room temperature. If this sensor becomes unavailable, the integration falls back to the built-in probe without interruption.",
           "window_sensor": "A HA binary sensor entity (binary_sensor domain) linked to a window or door contact sensor. When the sensor reports 'on' (open) for more than 10 minutes, the zone turns off automatically to save energy. The zone resumes as soon as the closure is detected. Zones that were already manually turned off are not affected."
+        }
+      },
+      "init": {
+        "menu_options": {
+          "zone_picker": "Zone sensors (external temperature / window)",
+          "general": "General settings (hysteresis, window delay)"
+        }
+      },
+      "general": {
+        "title": "Onna — general settings",
+        "description": "Installation-wide tuning. These values apply to all climate zones.",
+        "data": {
+          "setpoint_hysteresis": "Setpoint hysteresis (°C)",
+          "window_open_delay": "Window-open delay (seconds)"
+        },
+        "data_description": {
+          "setpoint_hysteresis": "Minimum change in the compensated setpoint before a new value is written to the KNX bus. Lower values track the external sensor more closely but generate more bus traffic; higher values reduce traffic at the cost of precision. Default: 0.5 °C.",
+          "window_open_delay": "How long a window must stay open before its zone thermostat is paused. Short ventilation bursts below this time are ignored. Default: 600 seconds (10 minutes)."
         }
       }
     }

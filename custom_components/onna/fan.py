@@ -28,6 +28,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
+from .entity import OnnaEntity
 
 
 async def async_setup_entry(
@@ -47,7 +48,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class OnnaFan(FanEntity, RestoreEntity):
+class OnnaFan(OnnaEntity, FanEntity, RestoreEntity):
     """Fancoil entity with manual override support.
 
     During normal operation, the fancoil is activated and speed-controlled by
@@ -102,15 +103,6 @@ class OnnaFan(FanEntity, RestoreEntity):
     @property
     def extra_state_attributes(self) -> dict:
         return {"override_active": self._override_active}
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._coordinator.client._onna_id)},
-            "name": "Onna",
-            "manufacturer": "Opendomo Things S.L.",
-            "model": "Onna M Lite",
-        }
 
     @callback
     def _handle_thermostat_onoff(self, value: Any) -> None:
@@ -180,3 +172,4 @@ class OnnaFan(FanEntity, RestoreEntity):
                 self._handle_thermostat_onoff,
             )
         )
+        self._subscribe_connection_signal()

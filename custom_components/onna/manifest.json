@@ -1,11 +1,14 @@
 {
   "domain": "onna",
   "name": "Onna",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "config_flow": true,
+  "integration_type": "hub",
   "documentation": "https://github.com/dmbuil/onna-ba",
-  "requirements": ["python-socketio==4.6.1", "python-engineio==3.14.2", "websockets"],
+  "issue_tracker": "https://github.com/dmbuil/onna-ba/issues",
+  "requirements": ["websockets>=11.0"],
   "dependencies": [],
-  "codeowners": [],
+  "codeowners": ["@dmbuil"],
+  "loggers": ["custom_components.onna"],
   "iot_class": "local_push"
 }

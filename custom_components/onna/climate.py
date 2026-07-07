@@ -80,17 +80,17 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN
+from .const import (
+    DEFAULT_SETPOINT_HYSTERESIS,
+    DEFAULT_WINDOW_OPEN_DELAY,
+    DOMAIN,
+)
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
+from .entity import OnnaEntity
 
 # KNX address for the installation-wide heating/cooling mode (DPT 1.001: 1=winter, 0=summer).
 # All five zones share this single address; individual zones can only turn ON/OFF.
 _WINTER_ADDR         = "0_0_7"
-
-# How long a window must stay open before we pause the zone (seconds).
-# 600 s (10 min) prevents brief ventilation events from repeatedly toggling
-# the thermostat and hammering the KNX bus.
-_WINDOW_OPEN_DELAY   = 600
 
 # Global-write-only addresses used by OnnaGeneralClimate.
 _GENERAL_SETPOINT_W = "0_0_2"  # broadcast setpoint to all zones
@@ -111,6 +111,8 @@ async def async_setup_entry(
     coordinator: OnnaCoordinator = hass.data[DOMAIN][entry.entry_id]
     temp_overrides = entry.options.get("climate_temp_override", {})
     window_sensors = entry.options.get("climate_window_sensor", {})
+    hysteresis = float(entry.options.get("setpoint_hysteresis", DEFAULT_SETPOINT_HYSTERESIS))
+    window_delay = int(entry.options.get("window_open_delay", DEFAULT_WINDOW_OPEN_DELAY))
     entities: list[ClimateEntity] = []
 
     for zone_id, info in coordinator.device_config["climate_addresses"].items():
@@ -126,6 +128,8 @@ async def async_setup_entry(
             onoff_r, onoff_w, demand_addr,
             external_temp_entity_id=temp_overrides.get(zone_id),
             window_sensor_entity_id=window_sensors.get(zone_id),
+            setpoint_hysteresis=hysteresis,
+            window_open_delay=window_delay,
         ))
 
     coordinator.register_address(_WINTER_ADDR)
@@ -137,7 +141,7 @@ async def async_setup_entry(
 # ---------------------------------------------------------------------------
 # Per-zone thermostat
 # ---------------------------------------------------------------------------
-class OnnaClimate(ClimateEntity, RestoreEntity):
+class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
     """Per-zone thermostat for one KNX heating/cooling zone.
 
     Each zone maps to one physical KNX thermostat controller.  HA can turn
@@ -179,6 +183,8 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
         demand_addr: str,
         external_temp_entity_id: str | None = None,
         window_sensor_entity_id: str | None = None,
+        setpoint_hysteresis: float = DEFAULT_SETPOINT_HYSTERESIS,
+        window_open_delay: int = DEFAULT_WINDOW_OPEN_DELAY,
     ) -> None:
         self._coordinator    = coordinator
         self._attr_name      = name
@@ -194,6 +200,9 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
         # and the setpoint written to KNX is offset-compensated (see module docstring).
         # To add a new zone override, add an entry to CLIMATE_TEMP_OVERRIDE in const.py.
         self._external_temp  = external_temp_entity_id
+        # Tunables from the options flow ("General settings").
+        self._setpoint_hysteresis = setpoint_hysteresis
+        self._window_open_delay   = window_open_delay
 
         data = coordinator.data
         self._onna_temp: float | None    = data.get(temp_addr)
@@ -204,7 +213,7 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
         self._demand: bool = bool(data.get(demand_addr, False))
         self._winter: bool = bool(data.get(_WINTER_ADDR, True))
         # Optional HA entity ID of a window/door binary sensor for this zone.
-        # When the sensor reports "on" (open) for longer than _WINDOW_OPEN_DELAY seconds,
+        # When the sensor reports "on" (open) for longer than the configured window delay,
         # the thermostat is paused.  It resumes automatically when the window closes.
         # To add a zone, add an entry to CLIMATE_WINDOW_SENSOR in const.py.
         self._window_sensor         = window_sensor_entity_id
@@ -218,15 +227,6 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
         # that after an HA restart we can recognise the stale Onna echo and not overwrite the
         # restored user setpoint with the compensated value.
         self._last_written_setpoint: float | None = None
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._coordinator.client._onna_id)},
-            "name": "Onna",
-            "manufacturer": "Opendomo Things S.L.",
-            "model": "Onna M Lite",
-        }
 
     @property
     def current_temperature(self) -> float | None:
@@ -287,10 +287,11 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
     async def _push_compensated_setpoint(self) -> None:
         """Write the compensated setpoint to the KNX bus, with hysteresis.
 
-        0.5 °C hysteresis prevents the KNX bus from being flooded whenever
-        an external sensor reports small fluctuations (e.g. ±0.1 °C noise).
-        Legitimate temperature changes large enough to shift the compensated
-        value by ≥ 0.5 °C will still trigger a write.
+        The hysteresis (default 0.5 °C, configurable via the options flow)
+        prevents the KNX bus from being flooded whenever an external sensor
+        reports small fluctuations (e.g. ±0.1 °C noise).  Legitimate
+        temperature changes large enough to shift the compensated value by
+        at least the hysteresis will still trigger a write.
 
         _last_written_setpoint is set to None by async_set_temperature to
         force an unconditional write when the user explicitly changes the
@@ -301,7 +302,7 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
             return
         if (
             self._last_written_setpoint is None
-            or abs(setpoint - self._last_written_setpoint) >= 0.5
+            or abs(setpoint - self._last_written_setpoint) >= self._setpoint_hysteresis
         ):
             self._last_written_setpoint = setpoint
             await self._coordinator.client.async_set_address_value(self._setpoint_w, setpoint)
@@ -368,6 +369,7 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
              and were read in __init__.  We only need to override from restored
              state for the target setpoint (which HA owns, not Onna).
         """
+        restored_window_pause = False
         if last_state := await self.async_get_last_state():
             if (temp := last_state.attributes.get("temperature")) is not None:
                 # Prefer the restored user intent over the coordinator seed.
@@ -378,6 +380,27 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
                 sp = last_state.attributes.get("_onna_compensated_setpoint")
                 if sp is not None:
                     self._last_written_setpoint = float(sp)
+            # A window-pause must survive restarts: without this, a paused zone
+            # whose window closes after the restart would never resume.
+            restored_window_pause = bool(
+                last_state.attributes.get("window_pause_active")
+            )
+            # Onna only pushes 1_X_1 (on/off) and 1_X_7 (demand) telegrams on
+            # *changes*, so after a reload these flags would sit stale (zone
+            # stuck on IDLE) until the device next toggles them.  Restore the
+            # recorder state — but never override a live value that already
+            # arrived in coordinator.data.
+            if self._onoff_r not in self._coordinator.data:
+                if last_state.state in (HVACMode.HEAT, HVACMode.COOL):
+                    self._is_on = True
+                elif last_state.state == HVACMode.OFF:
+                    self._is_on = False
+            if self._demand_addr not in self._coordinator.data:
+                action = last_state.attributes.get("hvac_action")
+                if action in (HVACAction.HEATING, HVACAction.COOLING):
+                    self._demand = True
+                elif action in (HVACAction.IDLE, HVACAction.OFF):
+                    self._demand = False
 
         for addr, handler in self._subscriptions():
             self.async_on_remove(
@@ -387,6 +410,7 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
                     handler,
                 )
             )
+        self._subscribe_connection_signal()
         if self._external_temp:
             # Seed the external temperature from the current HA state machine
             # so compensation is active immediately (no wait for first push).
@@ -411,6 +435,16 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
             state = self.hass.states.get(self._window_sensor)
             if state and state.state not in ("unavailable", "unknown"):
                 self._window_open = state.state == "on"
+            if restored_window_pause:
+                if self._window_open:
+                    # Still open — stay paused; the close event will resume.
+                    self._window_pause_active = True
+                else:
+                    # Window closed while HA was down — the close event that
+                    # would have resumed the zone never reached us, so do it now.
+                    await self._coordinator.client.async_set_address_value(
+                        self._onoff_w, 1
+                    )
             self.async_on_remove(
                 async_track_state_change_event(
                     self.hass,
@@ -531,7 +565,7 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
     def _handle_window_change(self, event: Any) -> None:
         """React to a window/door sensor state change.
 
-        Opening:  start a _WINDOW_OPEN_DELAY debounce timer.  If the window
+        Opening:  start the configured open-delay debounce timer.  If the window
                   is closed again before the timer fires, nothing happens —
                   brief ventilation events are ignored.
 
@@ -550,7 +584,7 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
 
         if is_open:
             self._window_cancel_timer = async_call_later(
-                self.hass, _WINDOW_OPEN_DELAY, self._handle_window_delay_elapsed
+                self.hass, self._window_open_delay, self._handle_window_delay_elapsed
             )
         else:
             self._cancel_window_timer()
@@ -564,7 +598,7 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
 
     @callback
     def _handle_window_delay_elapsed(self, _now: Any) -> None:
-        """Called _WINDOW_OPEN_DELAY seconds after a window opened.
+        """Called window_open_delay seconds after a window opened.
 
         Only pauses the zone if it is currently ON — a zone that the user
         already turned off should not be touched (we don't want to turn it on
@@ -582,7 +616,7 @@ class OnnaClimate(ClimateEntity, RestoreEntity):
 # ---------------------------------------------------------------------------
 # Global/master thermostat
 # ---------------------------------------------------------------------------
-class OnnaGeneralClimate(ClimateEntity, RestoreEntity):
+class OnnaGeneralClimate(OnnaEntity, ClimateEntity, RestoreEntity):
     """Write-only master thermostat — broadcasts setpoint/ON-OFF to all zones.
 
     Controls the whole installation at once via three write-only KNX addresses:
@@ -618,17 +652,11 @@ class OnnaGeneralClimate(ClimateEntity, RestoreEntity):
     def __init__(self, coordinator: OnnaCoordinator) -> None:
         self._coordinator  = coordinator
         self._target_temp: float | None = coordinator.data.get(_GENERAL_SEED_ADDR, 20.0)
-        self._hvac_mode    = HVACMode.HEAT_COOL
+        # Must be one of _attr_hvac_modes; the real mode is restored in
+        # async_added_to_hass.  These addresses are write-only, so until the
+        # user acts we cannot know the installation state — assume OFF.
+        self._hvac_mode    = HVACMode.OFF
         self._winter: bool = bool(coordinator.data.get(_WINTER_ADDR, True))
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._coordinator.client._onna_id)},
-            "name": "Onna",
-            "manufacturer": "Opendomo Things S.L.",
-            "model": "Onna M Lite",
-        }
 
     @property
     def current_temperature(self) -> None:
@@ -701,6 +729,7 @@ class OnnaGeneralClimate(ClimateEntity, RestoreEntity):
                 self._handle_winter,
             )
         )
+        self._subscribe_connection_signal()
 
     @callback
     def _handle_winter(self, value: Any) -> None:

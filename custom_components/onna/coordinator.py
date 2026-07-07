@@ -42,6 +42,10 @@ _LOGGER = logging.getLogger(__name__)
 # wake up on changes to the specific addresses they care about.
 SIGNAL_ADDRESS_UPDATE = f"{DOMAIN}_address_update_{{address_id}}"
 
+# Fired with a bool whenever the WebSocket connection to Onna comes up or
+# drops; entities use it to refresh their ``available`` state.
+SIGNAL_CONNECTION = f"{DOMAIN}_connection_update"
+
 
 class OnnaCoordinator:
     """Manages a single OnnaClient connection and dispatches HA signals.
@@ -64,6 +68,19 @@ class OnnaCoordinator:
         # duplicate client callbacks from the same address being registered
         # by multiple entities (e.g. _WINTER_ADDR is shared by all zones).
         self._registered: set[str] = set()
+        client.on_connection_change = self._handle_connection_change
+
+    @property
+    def connected(self) -> bool:
+        """True while the WebSocket to the Onna device is up."""
+        return self.client.connected
+
+    @callback
+    def _handle_connection_change(self, connected: bool) -> None:
+        """Relay client connection transitions to all entities via dispatcher."""
+        if not connected:
+            _LOGGER.warning("Onna connection lost — entities marked unavailable")
+        async_dispatcher_send(self.hass, SIGNAL_CONNECTION, connected)
 
     def _make_signal(self, address_id: str) -> str:
         """Return the HA dispatcher signal name for a KNX address."""
@@ -142,6 +159,7 @@ class OnnaCoordinator:
 
     async def async_stop(self) -> None:
         """Cancel the background connection task and clean up."""
+        await self.client.async_shutdown()
         if self._task:
             self._task.cancel()
             try:

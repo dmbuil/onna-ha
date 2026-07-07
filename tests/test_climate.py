@@ -104,19 +104,19 @@ async def test_set_hvac_mode_off_writes_zero_to_onoff():
 
 
 @pytest.mark.anyio
-async def test_set_hvac_mode_heat_is_noop():
+async def test_set_hvac_mode_heat_turns_zone_on():
     from custom_components.onna.climate import HVACMode
     zone = _make_zone()
     await zone.async_set_hvac_mode(HVACMode.HEAT)
-    zone._coordinator.client.async_set_address_value.assert_not_called()
+    zone._coordinator.client.async_set_address_value.assert_called_once_with("1_0_0", 1)
 
 
 @pytest.mark.anyio
-async def test_set_hvac_mode_cool_is_noop():
+async def test_set_hvac_mode_cool_turns_zone_on():
     from custom_components.onna.climate import HVACMode
     zone = _make_zone()
     await zone.async_set_hvac_mode(HVACMode.COOL)
-    zone._coordinator.client.async_set_address_value.assert_not_called()
+    zone._coordinator.client.async_set_address_value.assert_called_once_with("1_0_0", 1)
 
 
 # ---------------------------------------------------------------------------
@@ -350,15 +350,40 @@ async def test_push_compensated_setpoint_writes_when_threshold_exceeded():
     assert zone._coordinator.client.async_set_address_value.call_count == 2
 
 
-def test_handle_setpoint_ignored_when_compensation_active():
-    """External available → echo is compensated value, must not overwrite user intent."""
+def test_handle_setpoint_ignored_when_echo_matches_last_write_online():
+    """Echo of our own compensated write while external is online → ignored."""
     zone = _make_zone_with_override()
     zone._ext_available = True
     zone._ext_temp = 27.4
     zone._target_temp = 25.5
+    zone._last_written_setpoint = 23.5   # we wrote this compensated value
     zone.async_write_ha_state = MagicMock()
-    zone._handle_setpoint(23.5)
-    assert zone._target_temp == 25.5
+    zone._handle_setpoint(23.5)          # Onna echoes it back
+    assert zone._target_temp == 25.5     # user intent preserved
+
+
+def test_handle_setpoint_accepts_general_change_when_compensation_active():
+    """General thermostat changes setpoint while external is online → accepted."""
+    zone = _make_zone_with_override()
+    zone._ext_available = True
+    zone._ext_temp = 27.4
+    zone._target_temp = 25.5
+    zone._last_written_setpoint = 23.5   # previous compensation
+    zone.async_write_ha_state = MagicMock()
+    zone._handle_setpoint(26.0)          # General changed to 26
+    assert zone._target_temp == 26.0
+    assert zone._last_written_setpoint is None  # cleared so compensation recalculates
+
+
+def test_handle_setpoint_accepts_first_sync_when_no_prior_write_online():
+    """No prior compensated write (startup) while external online → sync accepted."""
+    zone = _make_zone_with_override()
+    zone._ext_available = True
+    zone._last_written_setpoint = None
+    zone._target_temp = 20.0
+    zone.async_write_ha_state = MagicMock()
+    zone._handle_setpoint(25.0)
+    assert zone._target_temp == 25.0
 
 
 def test_handle_setpoint_ignored_on_restart_stale_echo():
@@ -623,6 +648,7 @@ def test_general_handle_winter_updates_action():
     coord = _make_coordinator({"0_0_7": True})
     general = OnnaGeneralClimate(coord)
     general.async_write_ha_state = MagicMock()
+    general._hvac_mode = HVACMode.COOL  # action only reported while not OFF
     general._handle_winter(False)
     assert general.hvac_action == HVACAction.COOLING
 
@@ -665,7 +691,7 @@ def test_window_change_open_starts_timer():
         zone._handle_window_change(event)
 
     assert zone._window_open is True
-    mock_timer.assert_called_once_with(zone.hass, 60, zone._handle_window_delay_elapsed)
+    mock_timer.assert_called_once_with(zone.hass, 600, zone._handle_window_delay_elapsed)
 
 
 def test_window_change_close_cancels_timer():
@@ -806,3 +832,203 @@ async def test_async_added_seeds_window_open_state():
                    return_value=lambda: None):
             await zone.async_added_to_hass()
     assert zone._window_open is True
+
+
+# ---------------------------------------------------------------------------
+# OnnaGeneralClimate — initial mode must be a valid, selectable mode
+# ---------------------------------------------------------------------------
+
+def test_general_initial_hvac_mode_is_in_supported_modes():
+    general = OnnaGeneralClimate(_make_coordinator())
+    assert general.hvac_mode in general._attr_hvac_modes
+
+
+# ---------------------------------------------------------------------------
+# Window pause survives HA restarts
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_window_pause_restored_when_window_still_open():
+    """Restart while paused + window still open → stay paused, resume on close."""
+    zone = _make_zone_with_window()
+    zone.hass = MagicMock()
+    zone.hass.states.get.return_value = MagicMock(state="on")  # window open
+    zone.async_on_remove = MagicMock()
+    last_state = MagicMock()
+    last_state.attributes = {"window_pause_active": True, "window_open": True}
+    zone.async_get_last_state = AsyncMock(return_value=last_state)
+    with patch("custom_components.onna.climate.async_track_state_change_event",
+               return_value=lambda: None), \
+         patch("custom_components.onna.climate.async_dispatcher_connect",
+               return_value=lambda: None):
+        await zone.async_added_to_hass()
+    assert zone._window_pause_active is True
+    zone._coordinator.client.async_set_address_value.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_window_pause_resumes_zone_when_window_closed_during_downtime():
+    """Restart while paused + window now closed → resume the zone immediately."""
+    zone = _make_zone_with_window()
+    zone.hass = MagicMock()
+    zone.hass.states.get.return_value = MagicMock(state="off")  # window closed
+    zone.async_on_remove = MagicMock()
+    last_state = MagicMock()
+    last_state.attributes = {"window_pause_active": True, "window_open": True}
+    zone.async_get_last_state = AsyncMock(return_value=last_state)
+    with patch("custom_components.onna.climate.async_track_state_change_event",
+               return_value=lambda: None), \
+         patch("custom_components.onna.climate.async_dispatcher_connect",
+               return_value=lambda: None):
+        await zone.async_added_to_hass()
+    assert zone._window_pause_active is False
+    zone._coordinator.client.async_set_address_value.assert_called_once_with("1_2_0", 1)
+
+
+# ---------------------------------------------------------------------------
+# Configurable hysteresis and window delay
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_custom_hysteresis_allows_smaller_repush():
+    """With hysteresis 0.2, a 0.3 °C compensated shift must trigger a write
+    (the default 0.5 hysteresis would have suppressed it)."""
+    coord = _make_coordinator({"1_0_4": 25.4})
+    zone = OnnaClimate(
+        coord, "Salón+Cocina",
+        "1_0_4", "1_0_3", "1_0_2",
+        "1_0_1", "1_0_0", "1_0_7",
+        external_temp_entity_id="sensor.ext",
+        setpoint_hysteresis=0.2,
+    )
+    zone._onna_temp = 25.4
+    zone._ext_temp = 27.4
+    zone._ext_available = True
+    zone._target_temp = 25.5
+    await zone._push_compensated_setpoint()           # writes 23.5
+    zone._ext_temp = 27.7                             # compensated delta = 0.3
+    await zone._push_compensated_setpoint()
+    assert zone._coordinator.client.async_set_address_value.call_count == 2
+
+
+def test_custom_window_delay_used_for_pause_timer():
+    coord = _make_coordinator()
+    zone = OnnaClimate(
+        coord, "Dorm. 2",
+        "1_2_4", "1_2_3", "1_2_2",
+        "1_2_1", "1_2_0", "1_2_7",
+        window_sensor_entity_id="binary_sensor.window_dorm_2",
+        window_open_delay=120,
+    )
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    event = MagicMock()
+    event.data = {"new_state": MagicMock(state="on")}
+    with patch("custom_components.onna.climate.async_call_later") as mock_timer:
+        zone._handle_window_change(event)
+    mock_timer.assert_called_once_with(zone.hass, 120, zone._handle_window_delay_elapsed)
+
+
+@pytest.mark.anyio
+async def test_setup_entry_passes_tuning_options_to_zones():
+    from custom_components.onna.climate import async_setup_entry
+    from custom_components.onna.const import DOMAIN
+
+    coord = _make_coordinator()
+    coord.device_config = {
+        "climate_addresses": {
+            "zone_0": ["Salón+Cocina", "1_0_4", "1_0_3", "1_0_2", "1_0_1", "1_0_0", "1_0_7"],
+        }
+    }
+    hass = MagicMock()
+    hass.data = {DOMAIN: {"eid": coord}}
+    entry = MagicMock()
+    entry.entry_id = "eid"
+    entry.options = {"setpoint_hysteresis": 0.3, "window_open_delay": 300}
+    added = []
+    await async_setup_entry(hass, entry, lambda ents: added.extend(ents))
+
+    zone = added[0]
+    assert zone._setpoint_hysteresis == 0.3
+    assert zone._window_open_delay == 300
+
+
+@pytest.mark.anyio
+async def test_setup_entry_defaults_tuning_options():
+    from custom_components.onna.climate import async_setup_entry
+    from custom_components.onna.const import DOMAIN
+
+    coord = _make_coordinator()
+    coord.device_config = {
+        "climate_addresses": {
+            "zone_0": ["Salón+Cocina", "1_0_4", "1_0_3", "1_0_2", "1_0_1", "1_0_0", "1_0_7"],
+        }
+    }
+    hass = MagicMock()
+    hass.data = {DOMAIN: {"eid": coord}}
+    entry = MagicMock()
+    entry.entry_id = "eid"
+    entry.options = {}
+    added = []
+    await async_setup_entry(hass, entry, lambda ents: added.extend(ents))
+
+    zone = added[0]
+    assert zone._setpoint_hysteresis == 0.5
+    assert zone._window_open_delay == 600
+
+
+# ---------------------------------------------------------------------------
+# hvac state survives reloads (demand telegrams only fire on *changes*)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_restore_is_on_and_demand_when_no_live_data():
+    """After a reload, Onna won't re-send 1_X_7/1_X_1 until they change —
+    restore them from the recorder so hvac_action isn't stuck on IDLE."""
+    from custom_components.onna.climate import HVACAction
+    zone = _make_zone()  # coordinator.data empty
+    zone.hass = MagicMock()
+    zone.async_on_remove = MagicMock()
+    last_state = MagicMock()
+    last_state.state = "heat"
+    last_state.attributes = {"temperature": 21.0, "hvac_action": "heating"}
+    zone.async_get_last_state = AsyncMock(return_value=last_state)
+    with patch("custom_components.onna.climate.async_dispatcher_connect",
+               return_value=lambda: None):
+        await zone.async_added_to_hass()
+    assert zone._is_on is True
+    assert zone._demand is True
+    assert zone.hvac_action == HVACAction.HEATING
+
+
+@pytest.mark.anyio
+async def test_restore_off_state_when_no_live_data():
+    zone = _make_zone()
+    zone.hass = MagicMock()
+    zone.async_on_remove = MagicMock()
+    last_state = MagicMock()
+    last_state.state = "off"
+    last_state.attributes = {"hvac_action": "off"}
+    zone.async_get_last_state = AsyncMock(return_value=last_state)
+    with patch("custom_components.onna.climate.async_dispatcher_connect",
+               return_value=lambda: None):
+        await zone.async_added_to_hass()
+    assert zone._is_on is False
+    assert zone._demand is False
+
+
+@pytest.mark.anyio
+async def test_restore_does_not_override_live_coordinator_values():
+    """If live values already arrived, the (older) recorder state must lose."""
+    zone = _make_zone({"1_0_1": 0, "1_0_7": 0})  # live: zone off, no demand
+    zone.hass = MagicMock()
+    zone.async_on_remove = MagicMock()
+    last_state = MagicMock()
+    last_state.state = "heat"
+    last_state.attributes = {"hvac_action": "heating"}
+    zone.async_get_last_state = AsyncMock(return_value=last_state)
+    with patch("custom_components.onna.climate.async_dispatcher_connect",
+               return_value=lambda: None):
+        await zone.async_added_to_hass()
+    assert zone._is_on is False
+    assert zone._demand is False

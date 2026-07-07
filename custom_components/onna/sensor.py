@@ -49,6 +49,7 @@ from homeassistant.helpers.event import async_call_later
 
 from .const import DOMAIN
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
+from .entity import OnnaEntity
 
 # Seconds of silence before a flow sensor is reset to 0.
 # Must be comfortably longer than Onna's ~10 s update cadence during active flow.
@@ -70,7 +71,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class OnnaSensor(RestoreSensor):
+class OnnaSensor(OnnaEntity, RestoreSensor):
     """Numeric KNX sensor mirroring a single Onna group address.
 
     Inherits RestoreSensor to survive HA restarts.  The value is also seeded
@@ -104,15 +105,6 @@ class OnnaSensor(RestoreSensor):
         # Flow sensors get a staleness timer; all others leave these as-is.
         self._is_flow_sensor: bool = (device_class == "volume_flow_rate")
         self._flow_stale_cancel: Any = None
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._coordinator.client._onna_id)},
-            "name": "Onna",
-            "manufacturer": "Opendomo Things S.L.",
-            "model": "Onna M Lite",
-        }
 
     async def async_added_to_hass(self) -> None:
         """Restore last known value and subscribe to dispatcher updates.
@@ -148,6 +140,7 @@ class OnnaSensor(RestoreSensor):
                 self._handle_update,
             )
         )
+        self._subscribe_connection_signal()
         if self._is_flow_sensor:
             self.async_on_remove(self._cancel_flow_timer)
             self._arm_flow_timer()

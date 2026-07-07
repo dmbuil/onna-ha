@@ -2,50 +2,68 @@
   "config": {
     "step": {
       "user": {
-        "title": "Onna — configuración",
-        "description": "Introduce los datos de conexión de tu dispositivo Onna. La integración se conectará automáticamente para descubrir todas las zonas y entidades configuradas.",
+        "title": "Onna — setup",
+        "description": "Enter the connection details for your Onna device. The integration will connect automatically to discover all configured zones and entities.",
         "data": {
-          "host": "Dirección IP",
+          "host": "IP address",
           "onna_id": "Onna ID"
         },
         "data_description": {
-          "host": "Dirección IP local del dispositivo Onna en tu red (p. ej. 192.168.1.10). Puedes consultarla en el router o en la app Onna → Ajustes → Info del dispositivo.",
-          "onna_id": "Identificador único del dispositivo. Lo encontrarás en la app Onna → Ajustes → Info del dispositivo (campo 'ID')."
+          "host": "Local IP address of the Onna device on your network (e.g. 192.168.1.10). You can find it in your router or in the Onna app under Settings → Device info.",
+          "onna_id": "Unique device identifier. Find it in the Onna app under Settings → Device info (field 'ID')."
         }
       }
     },
     "error": {
-      "invalid_host": "La dirección IP no puede estar vacía.",
-      "invalid_onna_id": "El Onna ID no puede estar vacío.",
-      "cannot_connect": "No se pudo conectar al dispositivo. Comprueba que la IP es correcta, que el Onna está encendido y accesible desde este servidor.",
-      "no_devices_found": "El dispositivo respondió pero no devolvió ninguna zona de climatización configurada. Comprueba la configuración en la app Onna."
+      "invalid_host": "Enter a valid IP address or hostname (letters, digits, dots and hyphens only).",
+      "invalid_onna_id": "Enter a valid Onna ID (letters, digits, hyphens and underscores only).",
+      "cannot_connect": "Could not connect to the device. Check that the IP address is correct and that the Onna is powered on and reachable from this server.",
+      "no_devices_found": "The device responded but returned no configured climate zones. Check the configuration in the Onna app."
     },
     "abort": {
-      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+      "already_configured": "Device is already configured."
     }
   },
   "options": {
     "step": {
       "zone_picker": {
-        "title": "Onna — configurar zona",
-        "description": "Selecciona la zona de climatización que deseas personalizar. Puedes añadir un sensor de temperatura externo (más preciso que la sonda interna del termostato) y un sensor de ventana para apagar la zona automáticamente cuando la ventana lleve abierta más de 10 minutos. Cuando termines con una zona, vuelve a Configurar para ajustar las demás.",
+        "title": "Onna — configure zone",
+        "description": "Select the climate zone you want to customise. You can add an external temperature sensor (more accurate than the thermostat's built-in probe) and a window sensor to automatically turn off the zone when the window has been open for more than 10 minutes. When you are done with one zone, go back to Configure to adjust the others.",
         "data": {
-          "zone": "Zona"
+          "zone": "Zone"
         },
         "data_description": {
-          "zone": "Elige la zona que quieres configurar. Puedes repetir el proceso para cada zona de forma independiente."
+          "zone": "Choose the zone you want to configure. You can repeat the process for each zone independently."
         }
       },
       "zone_detail": {
-        "title": "Onna — sensores externos de la zona",
-        "description": "Ambos campos son opcionales. Si dejas un campo en blanco, esa función quedará desactivada para esta zona y se usará el comportamiento predeterminado (sonda interna del termostato / sin detección de ventana).",
+        "title": "Onna — external sensors for zone",
+        "description": "Both fields are optional. Leave a field blank to disable that feature for this zone and use the default behaviour (built-in thermostat probe / no window detection).",
         "data": {
-          "temp_sensor": "Sensor de temperatura externo",
-          "window_sensor": "Sensor de ventana / puerta"
+          "temp_sensor": "External temperature sensor",
+          "window_sensor": "Window / door sensor"
         },
         "data_description": {
-          "temp_sensor": "Entidad HA de tipo sensor (dominio sensor) que mide la temperatura real de la habitación en °C. Al configurarlo, la temperatura mostrada en HA y el punto de ajuste enviado al bus KNX se corrigen automáticamente para compensar la diferencia entre la sonda interna del termostato y la temperatura real. Si este sensor queda no disponible, la integración vuelve a usar la sonda interna sin interrupciones.",
-          "window_sensor": "Entidad HA de tipo sensor binario (dominio binary_sensor) asociada a un detector de apertura de ventana o puerta. Cuando el sensor reporta 'on' (abierto) durante más de 10 minutos, la zona se apaga automáticamente para ahorrar energía. La zona se reactiva en cuanto se detecta el cierre. Las zonas que ya estaban apagadas manualmente no se ven afectadas."
+          "temp_sensor": "A HA sensor entity (sensor domain) measuring the actual room temperature in °C. Once set, the temperature displayed in HA and the setpoint sent to the KNX bus are automatically corrected to compensate for the difference between the thermostat's built-in probe and the real room temperature. If this sensor becomes unavailable, the integration falls back to the built-in probe without interruption.",
+          "window_sensor": "A HA binary sensor entity (binary_sensor domain) linked to a window or door contact sensor. When the sensor reports 'on' (open) for more than 10 minutes, the zone turns off automatically to save energy. The zone resumes as soon as the closure is detected. Zones that were already manually turned off are not affected."
+        }
+      },
+      "init": {
+        "menu_options": {
+          "zone_picker": "Zone sensors (external temperature / window)",
+          "general": "General settings (hysteresis, window delay)"
+        }
+      },
+      "general": {
+        "title": "Onna — general settings",
+        "description": "Installation-wide tuning. These values apply to all climate zones.",
+        "data": {
+          "setpoint_hysteresis": "Setpoint hysteresis (°C)",
+          "window_open_delay": "Window-open delay (seconds)"
+        },
+        "data_description": {
+          "setpoint_hysteresis": "Minimum change in the compensated setpoint before a new value is written to the KNX bus. Lower values track the external sensor more closely but generate more bus traffic; higher values reduce traffic at the cost of precision. Default: 0.5 °C.",
+          "window_open_delay": "How long a window must stay open before its zone thermostat is paused. Short ventilation bursts below this time are ignored. Default: 600 seconds (10 minutes)."
         }
       }
     }
