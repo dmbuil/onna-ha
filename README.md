@@ -1,16 +1,21 @@
+# Onna-HA
+
 [![GitHub Release][releases-shield]][releases]
 [![GitHub Release Date][release-date-shield]][releases]
 [![GitHub Activity][commits-shield]][commits]
 [![License][license-shield]](LICENSE)
 [![hacs][hacsbadge]][hacs]
 
-# Onna-HA
+> [!NOTE]
+> This integration is **not affiliated with [Onna](https://onnahome.com)**. It
+> is a community project developed by a Home Assistant user.
 
-Join **Onna** with **Home Assistant**!
+**Onna-HA** integrates the [Onna M Lite](https://onnahome.com/) home automation
+controller by Onna with Home Assistant using the device's local `Socket.IO`
+interface — no cloud account or internet connection required.
 
-`onna-ha` integrates the [Onna M Lite](https://onnahome.com/) home automation controller by Onna with Home Assistant using the device's local Socket.IO interface — no cloud account or internet connection required.
-
-State updates are **push-based**: the Onna device broadcasts KNX group address changes in real time, so entities update instantly without polling.
+State updates are **push-based**: the Onna device broadcasts KNX group address
+changes in real time, so entities update instantly without polling.
 
 ## Table of Contents
 
@@ -75,9 +80,13 @@ Open the Onna iOS or Android app while connected to your home Wi-Fi (LAN mode). 
 
 ## Entities
 
-All entities are grouped under a single **Onna** device (manufacturer: Opendomo Things S.L., model: Onna M Lite).
+All entities are grouped under a single **Onna** device.
 
 ### Sensor
+
+> [!NOTE] Naming
+> The naming of the entities depends on the Onna deployment and the configuration of the KNX group addresses. The names shown here are
+> based on _my_ M Lite installation, but feel free to rename them in Home Assistant to whatever makes sense for your home.
 
 | Name                      | Unit | Device Class       | State Class      |
 | ------------------------- | ---- | ------------------ | ---------------- |
@@ -105,7 +114,8 @@ All entities are grouped under a single **Onna** device (manufacturer: Opendomo 
 | Dorm. 3 Consigna          | °C   | `temperature`      | measurement      |
 | Dorm. 4 Consigna          | °C   | `temperature`      | measurement      |
 
-> **Consigna** sensors report the active thermostat setpoint as broadcast by the device. They update automatically when the setpoint is changed from the Onna app or a physical thermostat.
+> [!NOTE] Consigna
+> sensors report the active thermostat setpoint as broadcast by the device. They update automatically when the setpoint is changed from the Onna app or a physical thermostat.
 
 ### Binary Sensor
 
@@ -123,10 +133,10 @@ All entities are grouped under a single **Onna** device (manufacturer: Opendomo 
 
 ### Valve
 
-| Name              | Device Class | Notes                                                                   |
-| ----------------- | ------------ | ----------------------------------------------------------------------- |
-| EV Suelo Radiante | `water`      | Read-only — electrovalve state for the underfloor heating circuit       |
-| Válvulas Colector | `water`      | Read-only — open/closed state of the underfloor heating manifold valves |
+| Name              | Device Class | Notes                                                                  |
+| ----------------- | ------------ | ---------------------------------------------------------------------- |
+| EV Suelo Radiante | `water`      | Read-only: electrovalve state for the underfloor heating circuit       |
+| Válvulas Colector | `water`      | Read-only: open/closed state of the underfloor heating manifold valves |
 
 ### Fan
 
@@ -171,7 +181,7 @@ The Onna device exposes its Socket.IO server over **unencrypted `ws://` with no 
 
 * **Anyone on your LAN who knows (or sniffs) the Onna ID can read and write KNX addresses** — including turning heating zones on/off and changing setpoints. Keep the device on a trusted network segment (e.g. an IoT VLAN that only Home Assistant can reach).
 * The integration treats the Onna ID as a credential: it is URL-encoded before use, never written to logs, and redacted from downloadable diagnostics.
-* All communication is local; the integration never contacts the internet.
+* For remote access, Onna App connects to Onna Cloud Service, which then connects to the device over a secure channel.
 
 ## Development
 
@@ -194,8 +204,6 @@ The Onna device responds to `READ_CONFIGURATION` with a snapshot of all active K
 ### Single-instance only
 
 Only one Onna device per Home Assistant instance is currently supported.
-
----
 
 [commits-shield]: https://img.shields.io/github/last-commit/dmbuil/onna-ha?style=for-the-badge
 [commits]: https://github.com/dmbuil/onna-ha/commits/main
