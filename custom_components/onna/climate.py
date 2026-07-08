@@ -11,6 +11,14 @@ Two entity types are created:
                        setpoint and ON/OFF to the whole installation (addresses 0_0_1/2/3).
                        It has no current-temperature sensor and no read-back; state is local.
 
+--- Setpoint 7.0 °C ⇄ OFF equivalence ---
+
+The temperature slider alone fully controls a thermostat (zones and general):
+setting the minimum (7.0 °C) is equivalent to turning it off — the last real
+target is preserved — and setting any higher value while off turns it back on.
+Only user-facing set_temperature calls behave this way; the compensated write
+path may legitimately write 7.0 to the KNX bus without toggling the zone.
+
 --- Window open detection and thermostat pause ---
 
 To save energy, a zone thermostat can be automatically paused when its window
@@ -308,18 +316,34 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             await self._coordinator.client.async_set_address_value(self._setpoint_w, setpoint)
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
-        """Accept a user setpoint change from HA and push it to Onna."""
+        """Accept a user setpoint change from HA and push it to Onna.
+
+        The temperature slider alone fully controls the zone:
+          • min_temp (7.0 °C) is equivalent to turning the zone off.  The last
+            real target is kept so the UI restores it when the zone comes back.
+          • Any higher value while the zone is off turns it back on.
+        Both paths delegate to async_turn_on/off so their side effects apply
+        (notably clearing the window-pause flag — a temperature change counts
+        as a user override).
+        """
         temp = kwargs.get(ATTR_TEMPERATURE)
-        if temp is not None:
-            self._target_temp = float(temp)
-            # Write HA state immediately with the user's intent so the UI updates
-            # before the Onna echo arrives (the echo carries the *compensated* value
-            # and must not overwrite this stored user intent).
-            self.async_write_ha_state()
-            # Clear last_written_setpoint so the next _push call always writes,
-            # even if the compensated value happens to equal the previous write.
-            self._last_written_setpoint = None
-            await self._push_compensated_setpoint()
+        if temp is None:
+            return
+        if float(temp) <= self._attr_min_temp:
+            await self.async_turn_off()
+            return
+        was_off = not self._is_on
+        self._target_temp = float(temp)
+        # Write HA state immediately with the user's intent so the UI updates
+        # before the Onna echo arrives (the echo carries the *compensated* value
+        # and must not overwrite this stored user intent).
+        self.async_write_ha_state()
+        # Clear last_written_setpoint so the next _push call always writes,
+        # even if the compensated value happens to equal the previous write.
+        self._last_written_setpoint = None
+        await self._push_compensated_setpoint()
+        if was_off:
+            await self.async_turn_on()
 
     async def async_turn_on(self) -> None:
         """Turn the zone thermostat on and clear any window-pause flag.
@@ -683,11 +707,28 @@ class OnnaGeneralClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         await self._coordinator.client.async_set_address_value(_GENERAL_ONOFF_W, 0)
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
+        """Broadcast a new installation-wide setpoint.
+
+        Mirrors the per-zone slider semantics: min_temp (7.0 °C) broadcasts
+        installation OFF (target kept); a higher value while OFF broadcasts the
+        setpoint and turns the installation on, with the local mode derived
+        from the winter flag (these addresses are write-only, state is local).
+        """
         temp = kwargs.get(ATTR_TEMPERATURE)
-        if temp is not None:
-            self._target_temp = float(temp)
-            await self._coordinator.client.async_set_address_value(_GENERAL_SETPOINT_W, float(temp))
+        if temp is None:
+            return
+        if float(temp) <= self._attr_min_temp:
+            self._hvac_mode = HVACMode.OFF
+            await self._coordinator.client.async_set_address_value(_GENERAL_ONOFF_W, 0)
             self.async_write_ha_state()
+            return
+        was_off = self._hvac_mode == HVACMode.OFF
+        self._target_temp = float(temp)
+        await self._coordinator.client.async_set_address_value(_GENERAL_SETPOINT_W, float(temp))
+        if was_off:
+            self._hvac_mode = HVACMode.HEAT if self._winter else HVACMode.COOL
+            await self._coordinator.client.async_set_address_value(_GENERAL_ONOFF_W, 1)
+        self.async_write_ha_state()
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set the installation-wide HVAC mode.
