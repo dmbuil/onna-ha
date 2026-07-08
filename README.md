@@ -209,7 +209,7 @@ Only one Onna device per Home Assistant instance is currently supported.
 [commits]: https://github.com/dmbuil/onna-ha/commits/main
 [hacs]: https://hacs.xyz
 [hacsbadge]: https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge
-[license-shield]: https://img.shields.io/github/license/dmbuil/onna-ha.svg?style=for-the-badge
+[license-shield]: https://img.shields.io/github/license/dmbuil/onna-ha?label=license&style=for-the-badge
 [release-date-shield]: https://img.shields.io/github/release-date/dmbuil/onna-ha?display_date=published_at&style=for-the-badge
 [releases-shield]: https://img.shields.io/github/v/release/dmbuil/onna-ha?style=for-the-badge
 [releases]: https://github.com/dmbuil/onna-ha/releases
