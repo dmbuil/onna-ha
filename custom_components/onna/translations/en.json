@@ -62,7 +62,7 @@
           "window_open_delay": "Window-open delay (seconds)"
         },
         "data_description": {
-          "setpoint_hysteresis": "Minimum change in the compensated setpoint before a new value is written to the KNX bus. Lower values track the external sensor more closely but generate more bus traffic; higher values reduce traffic at the cost of precision. Default: 0.5 °C.",
+          "setpoint_hysteresis": "Minimum change in the compensated setpoint before a new value is written to the KNX bus. Lower values track the external sensor more closely but generate more bus traffic; higher values reduce traffic at the cost of precision. Set 0.0 to write every change. Default: 0.5 °C.",
           "window_open_delay": "How long a window must stay open before its zone thermostat is paused. Short ventilation bursts below this time are ignored. Default: 600 seconds (10 minutes)."
         }
       }

@@ -913,6 +913,30 @@ async def test_custom_hysteresis_allows_smaller_repush():
     assert zone._coordinator.client.async_set_address_value.call_count == 2
 
 
+@pytest.mark.anyio
+async def test_zero_hysteresis_writes_any_change_but_not_identical():
+    """With hysteresis 0.0 every compensated change is pushed, however small,
+    but an unchanged setpoint must not be rewritten on each sensor update."""
+    coord = _make_coordinator({"1_0_4": 25.4})
+    zone = OnnaClimate(
+        coord, "Salón+Cocina",
+        "1_0_4", "1_0_3", "1_0_2",
+        "1_0_1", "1_0_0", "1_0_7",
+        external_temp_entity_id="sensor.ext",
+        setpoint_hysteresis=0.0,
+    )
+    zone._onna_temp = 25.4
+    zone._ext_temp = 27.4
+    zone._ext_available = True
+    zone._target_temp = 25.5
+    await zone._push_compensated_setpoint()           # writes 23.5
+    await zone._push_compensated_setpoint()           # no change: must not rewrite
+    assert zone._coordinator.client.async_set_address_value.call_count == 1
+    zone._ext_temp = 27.5                             # compensated delta = 0.1
+    await zone._push_compensated_setpoint()
+    assert zone._coordinator.client.async_set_address_value.call_count == 2
+
+
 def test_custom_window_delay_used_for_pause_timer():
     coord = _make_coordinator()
     zone = OnnaClimate(

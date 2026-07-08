@@ -308,9 +308,11 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         setpoint = self._compute_onna_setpoint()
         if setpoint is None:
             return
-        if (
-            self._last_written_setpoint is None
-            or abs(setpoint - self._last_written_setpoint) >= self._setpoint_hysteresis
+        # With hysteresis 0.0 any change is written, but an unchanged
+        # setpoint must never be rewritten (delta 0 satisfies >= 0).
+        if self._last_written_setpoint is None or (
+            (delta := abs(setpoint - self._last_written_setpoint)) > 0
+            and delta >= self._setpoint_hysteresis
         ):
             self._last_written_setpoint = setpoint
             await self._coordinator.client.async_set_address_value(self._setpoint_w, setpoint)

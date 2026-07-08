@@ -142,7 +142,7 @@ class OnnaOptionsFlow(OptionsFlow):
                     "setpoint_hysteresis",
                     default=opts.get("setpoint_hysteresis", DEFAULT_SETPOINT_HYSTERESIS),
                 ): NumberSelector(NumberSelectorConfig(
-                    min=0.1, max=5.0, step=0.1,
+                    min=0.0, max=5.0, step=0.1,
                     unit_of_measurement="°C", mode=NumberSelectorMode.BOX,
                 )),
                 vol.Optional(

@@ -62,7 +62,7 @@
           "window_open_delay": "Retardo de ventana abierta (segundos)"
         },
         "data_description": {
-          "setpoint_hysteresis": "Cambio mínimo de la consigna compensada antes de escribir un nuevo valor en el bus KNX. Valores bajos siguen el sensor externo con más fidelidad pero generan más tráfico en el bus; valores altos reducen el tráfico a costa de precisión. Por defecto: 0,5 °C.",
+          "setpoint_hysteresis": "Cambio mínimo de la consigna compensada antes de escribir un nuevo valor en el bus KNX. Valores bajos siguen el sensor externo con más fidelidad pero generan más tráfico en el bus; valores altos reducen el tráfico a costa de precisión. Con 0,0 se escribe cada cambio. Por defecto: 0,5 °C.",
           "window_open_delay": "Tiempo que una ventana debe permanecer abierta antes de pausar el termostato de su zona. Las ventilaciones breves por debajo de este tiempo se ignoran. Por defecto: 600 segundos (10 minutos)."
         }
       }
