@@ -84,7 +84,7 @@ All entities are grouped under a single **Onna** device.
 
 ### Sensor
 
-> [!NOTE] Naming
+> [!NOTE]
 > The naming of the entities depends on the Onna deployment and the configuration of the KNX group addresses. The names shown here are
 > based on _my_ M Lite installation, but feel free to rename them in Home Assistant to whatever makes sense for your home.
 
@@ -114,7 +114,7 @@ All entities are grouped under a single **Onna** device.
 | Dorm. 3 Consigna          | °C   | `temperature`      | measurement      |
 | Dorm. 4 Consigna          | °C   | `temperature`      | measurement      |
 
-> [!NOTE] Consigna
+> [!NOTE]
 > sensors report the active thermostat setpoint as broadcast by the device. They update automatically when the setpoint is changed from the Onna app or a physical thermostat.
 
 ### Binary Sensor
