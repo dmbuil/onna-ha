@@ -46,14 +46,16 @@ changes in real time, so entities update instantly without polling.
 
 In HACS, add this as a custom repository: `https://github.com/dmbuil/onna-ha`
 
-Then go to the HACS integrations page, search for **Onna** and install it. Once installed, restart Home Assistant.
+Then go to the HACS integrations page, search for **Onna** and install it. Once
+installed, restart Home Assistant.
 
 ### Manual Installation
 
 <details>
 <summary>Manual installation steps</summary>
 
-Copy the `custom_components/onna` directory into your Home Assistant `config/custom_components/` folder:
+Copy the `custom_components/onna` directory into your Home Assistant
+`config/custom_components/` folder:
 
 ```bash
 cp -r custom_components/onna /config/custom_components/onna
@@ -76,7 +78,8 @@ After saving, a single **Onna** device appears with all 35 entities.
 
 ### Finding your Onna ID
 
-Open the Onna iOS or Android app while connected to your home Wi-Fi (LAN mode). Go to **Settings → Device info** — the Onna ID is displayed there.
+Open the Onna iOS or Android app while connected to your home Wi-Fi (LAN mode).
+Go to **Settings → Device info** — the Onna ID is displayed there.
 
 ## Entities
 
@@ -85,8 +88,10 @@ All entities are grouped under a single **Onna** device.
 ### Sensor
 
 > [!NOTE]
-> The naming of the entities depends on the Onna deployment and the configuration of the KNX group addresses. The names shown here are
-> based on _my_ M Lite installation, but feel free to rename them in Home Assistant to whatever makes sense for your home.
+> The naming of the entities depends on the Onna deployment and the configuration
+> of the KNX group addresses. The names shown here are
+> based on _my_ M Lite installation, but feel free to rename them in Home
+> Assistant to whatever makes sense for your home.
 
 | Name                      | Unit | Device Class       | State Class      |
 | ------------------------- | ---- | ------------------ | ---------------- |
@@ -115,7 +120,9 @@ All entities are grouped under a single **Onna** device.
 | Dorm. 4 Consigna          | °C   | `temperature`      | measurement      |
 
 > [!NOTE]
-> sensors report the active thermostat setpoint as broadcast by the device. They update automatically when the setpoint is changed from the Onna app or a physical thermostat.
+> sensors report the active thermostat setpoint as broadcast by the device. They
+> update automatically when the setpoint is changed from the Onna app or a
+> physical thermostat.
 
 ### Binary Sensor
 
@@ -146,7 +153,9 @@ All entities are grouped under a single **Onna** device.
 
 ## Technical Details
 
-The Onna device runs a **Socket.IO v2** server (Engine.IO v3, `EIO=3`) over WebSocket on port 4001. The integration communicates directly via raw WebSocket frames, which avoids incompatibilities with the python-socketio v5 API.
+The Onna device runs a **Socket.IO v2** server (Engine.IO v3, `EIO=3`) over
+WebSocket on port 4001. The integration communicates directly via raw WebSocket
+frames, which avoids incompatibilities with the python-socketio v5 API.
 
 ### Protocol events
 
@@ -162,26 +171,38 @@ KNX group addresses are represented as underscore-separated strings (e.g. `1_0_4
 
 On startup the integration:
 1. Opens a WebSocket to `ws://<host>:4001/socket.io/?EIO=3&transport=websocket&onnaId=<id>`
-2. Sends `READ_CONFIGURATION` to receive the current state of all registered addresses
-3. Enters a receive loop, sending an EIO heartbeat ping every `pingInterval` (10 s — in Engine.IO v3 the client pings, the server pongs) and dispatching incoming `SET_ADDRESS_VALUE_FROM_SERVER` events to the relevant HA entities
+2. Sends `READ_CONFIGURATION` to receive the current state of all registered
+   addresses
+3. Enters a receive loop, sending an EIO heartbeat ping every `pingInterval` (10
+   s — in Engine.IO v3 the client pings, the server pongs) and dispatching
+   incoming `SET_ADDRESS_VALUE_FROM_SERVER` events to the relevant HA entities
 
-If the connection drops, the client reconnects automatically using the `websockets` library's built-in reconnect loop.
+If the connection drops, the client reconnects automatically using the
+`websockets` library's built-in reconnect loop.
 
 ### Python dependencies
 
-```
+```txt
 websockets>=11.0
 ```
 
-The integration speaks Socket.IO v2 by building raw frames itself, so the `python-socketio` / `python-engineio` libraries are not required.
+The integration speaks Socket.IO v2 by building raw frames itself, so the
+`python-socketio` / `python-engineio` libraries are not required.
 
 ## Security model
 
-The Onna device exposes its Socket.IO server over **unencrypted `ws://` with no authentication beyond the Onna ID**, which is sent as a URL query parameter. This is a property of the device firmware, not of this integration. Practical implications:
+The Onna device exposes its Socket.IO server over **unencrypted `ws://` with no
+authentication beyond the Onna ID**, which is sent as a URL query parameter. This
+is a property of the device firmware, not of this integration. Practical implications:
 
-* **Anyone on your LAN who knows (or sniffs) the Onna ID can read and write KNX addresses** — including turning heating zones on/off and changing setpoints. Keep the device on a trusted network segment (e.g. an IoT VLAN that only Home Assistant can reach).
-* The integration treats the Onna ID as a credential: it is URL-encoded before use, never written to logs, and redacted from downloadable diagnostics.
-* For remote access, Onna App connects to Onna Cloud Service, which then connects to the device over a secure channel.
+* **Anyone on your LAN who knows (or sniffs) the Onna ID can read and write KNX**
+  **addresses** — including turning heating zones on/off and changing setpoints.
+  Keep the device on a trusted network segment (e.g. an IoT VLAN that only Home
+  Assistant can reach).
+* The integration treats the Onna ID as a credential: it is URL-encoded before
+  use, never written to logs, and redacted from downloadable diagnostics.
+* For remote access, Onna App connects to Onna Cloud Service, which then connects
+  to the device over a secure channel.
 
 ## Development
 
@@ -193,13 +214,18 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ```
 
-HA platform base classes (`SensorEntity`, `BinarySensorEntity`, `ValveEntity`, `ConfigFlow`, etc.) are stubbed in `tests/conftest.py`, so the full test suite runs in a plain Python environment.
+HA platform base classes (`SensorEntity`, `BinarySensorEntity`, `ValveEntity`,
+`ConfigFlow`, etc.) are stubbed in `tests/conftest.py`, so the full test suite
+runs in a plain Python environment.
 
 ## Known Issues
 
 ### Initial state on startup
 
-The Onna device responds to `READ_CONFIGURATION` with a snapshot of all active KNX addresses, but addresses that have not changed since the device last booted may not be included. Entities for those addresses will show as `unknown` until the device next broadcasts an update for them.
+The Onna device responds to `READ_CONFIGURATION` with a snapshot of all active
+KNX addresses, but addresses that have not changed since the device last booted
+may not be included. Entities for those addresses will show as `unknown` until
+the device next broadcasts an update for them.
 
 ### Single-instance only
 
