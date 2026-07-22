@@ -71,11 +71,12 @@ def test_apply_reading_winter_gate_dispatches_on_crossing():
         # first reading seeds EMA at 25 (> 20.5) → gate turns on, dispatch True
         coord._apply_reading(now=0.0, reading=25.0)
         assert coord.seasonal_gate_active is True
-        send.assert_called_once_with(coord.hass, SIGNAL_SEASONAL_GATE, True)
+        send.assert_any_call(coord.hass, SIGNAL_SEASONAL_GATE, True)
 
 
-def test_apply_reading_no_dispatch_when_gate_unchanged():
+def test_apply_reading_no_gate_dispatch_when_gate_unchanged():
     from custom_components.onna import coordinator as coord_mod
+    from custom_components.onna.coordinator import SIGNAL_SEASONAL_GATE
 
     coord = OnnaCoordinator(MagicMock(), MagicMock())
     coord.data["0_0_7"] = True
@@ -83,7 +84,11 @@ def test_apply_reading_no_dispatch_when_gate_unchanged():
     with patch.object(coord_mod, "async_dispatcher_send") as send:
         coord._apply_reading(now=0.0, reading=10.0)   # cold, no winter gate
         assert coord.seasonal_gate_active is False
-        send.assert_not_called()
+        # The EMA signal still fires; only the gate signal must not.
+        gate_calls = [
+            c for c in send.call_args_list if c.args[1] == SIGNAL_SEASONAL_GATE
+        ]
+        assert gate_calls == []
 
 
 def test_seed_outdoor_ema_restores_snapshot():
@@ -128,3 +133,24 @@ async def test_start_seasonal_noop_without_source():
     coord.configure_seasonal(None, 20.0, 16.0)
     await coord.async_start_seasonal()  # must not raise, no trackers
     assert coord._seasonal_unsubs == []
+
+
+def test_apply_reading_publishes_outdoor_ema_synthetic_address():
+    from custom_components.onna import coordinator as coord_mod
+    from custom_components.onna.coordinator import SIGNAL_ADDRESS_UPDATE
+
+    coord = OnnaCoordinator(MagicMock(), MagicMock())
+    coord.data["0_0_7"] = True
+    coord.configure_seasonal("weather.home", 20.0, 16.0)
+    with patch.object(coord_mod, "async_dispatcher_send") as send:
+        coord._apply_reading(now=0.0, reading=18.0)
+    assert coord.data["outdoor_ema"] == 18.0
+    send.assert_any_call(
+        coord.hass, SIGNAL_ADDRESS_UPDATE.format(address_id="outdoor_ema"), 18.0
+    )
+
+
+def test_seed_outdoor_ema_populates_synthetic_address():
+    coord = OnnaCoordinator(MagicMock(), MagicMock())
+    coord.seed_outdoor_ema(17.5, 100.0)
+    assert coord.data["outdoor_ema"] == 17.5

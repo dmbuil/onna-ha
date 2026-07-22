@@ -150,6 +150,9 @@ class OnnaCoordinator:
     def seed_outdoor_ema(self, value: float | None, updated_at: float | None) -> None:
         """Restore a persisted EMA (called by the general thermostat on restore)."""
         self._ema = OutdoorEMA(value=value, updated_at=updated_at)
+        # Mirror into the synthetic address so the monitoring sensor seeds too.
+        if value is not None:
+            self.data["outdoor_ema"] = value
 
     def outdoor_ema_snapshot(self) -> tuple:
         """Return (value, updated_at) for persistence / diagnostics."""
@@ -163,6 +166,14 @@ class OnnaCoordinator:
         """Fold a new outdoor reading into the EMA and re-evaluate the gate."""
         self._last_outdoor_reading = reading
         self._ema.update(now, reading)
+        # Publish the EMA as a synthetic address so the monitoring sensor tracks
+        # it live (same mechanism as cfg_internal_offset).
+        self.data["outdoor_ema"] = self._ema.value
+        async_dispatcher_send(
+            self.hass,
+            self._make_signal("outdoor_ema"),
+            self._ema.value,
+        )
         self._reevaluate()
 
     @callback
