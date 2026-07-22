@@ -90,3 +90,41 @@ def test_seed_outdoor_ema_restores_snapshot():
     coord = OnnaCoordinator(MagicMock(), MagicMock())
     coord.seed_outdoor_ema(18.0, 123.0)
     assert coord.outdoor_ema_snapshot() == (18.0, 123.0)
+
+
+def test_read_outdoor_from_weather_attribute():
+    coord = OnnaCoordinator(MagicMock(), MagicMock())
+    coord._outdoor_entity = "weather.home"
+    state = MagicMock()
+    state.domain = "weather"
+    state.state = "sunny"
+    state.attributes = {"temperature": 22.5}
+    assert coord._read_outdoor(state) == 22.5
+
+
+def test_read_outdoor_from_sensor_state():
+    coord = OnnaCoordinator(MagicMock(), MagicMock())
+    coord._outdoor_entity = "sensor.outdoor"
+    state = MagicMock()
+    state.domain = "sensor"
+    state.state = "12.0"
+    state.attributes = {}
+    assert coord._read_outdoor(state) == 12.0
+
+
+def test_read_outdoor_returns_none_on_unavailable():
+    coord = OnnaCoordinator(MagicMock(), MagicMock())
+    coord._outdoor_entity = "sensor.outdoor"
+    state = MagicMock()
+    state.domain = "sensor"
+    state.state = "unavailable"
+    state.attributes = {}
+    assert coord._read_outdoor(state) is None
+
+
+@pytest.mark.anyio
+async def test_start_seasonal_noop_without_source():
+    coord = OnnaCoordinator(MagicMock(), MagicMock())
+    coord.configure_seasonal(None, 20.0, 16.0)
+    await coord.async_start_seasonal()  # must not raise, no trackers
+    assert coord._seasonal_unsubs == []

@@ -28,10 +28,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.dispatcher import (
+    async_dispatcher_send,
+    async_dispatcher_connect,
+)
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_interval,
+)
 
 from .client import OnnaClient
 from .const import (
@@ -172,6 +181,63 @@ class OnnaCoordinator:
             self._gate_active = new_gate
             async_dispatcher_send(self.hass, SIGNAL_SEASONAL_GATE, new_gate)
 
+    def _read_outdoor(self, state) -> float | None:
+        """Extract a numeric outdoor temperature from a HA state object."""
+        if state is None or state.state in ("unavailable", "unknown"):
+            return None
+        # weather entities carry the temperature as an attribute, not the state.
+        if getattr(state, "domain", None) == "weather" or str(
+            self._outdoor_entity or ""
+        ).startswith("weather."):
+            temp = state.attributes.get("temperature")
+            return float(temp) if temp is not None else None
+        try:
+            return float(state.state)
+        except (ValueError, TypeError):
+            return None
+
+    async def async_start_seasonal(self) -> None:
+        """Wire the live outdoor trackers (called after entity setup)."""
+        if not self._outdoor_entity:
+            return
+
+        # Seed from the current state so the gate is meaningful immediately.
+        state = self.hass.states.get(self._outdoor_entity)
+        reading = self._read_outdoor(state)
+        if reading is not None:
+            self._apply_reading(time.time(), reading)
+
+        @callback
+        def _on_outdoor_change(event) -> None:
+            new_reading = self._read_outdoor(event.data.get("new_state"))
+            if new_reading is not None:
+                self._apply_reading(time.time(), new_reading)
+
+        @callback
+        def _on_winter(_value) -> None:
+            self._reevaluate()
+
+        @callback
+        def _hourly_tick(_now) -> None:
+            # Re-fold the last known reading so the EMA keeps decaying toward it
+            # even when the source state is not changing.
+            if self._last_outdoor_reading is not None:
+                self._apply_reading(time.time(), self._last_outdoor_reading)
+
+        self._seasonal_unsubs = [
+            async_track_state_change_event(
+                self.hass, self._outdoor_entity, _on_outdoor_change
+            ),
+            async_dispatcher_connect(
+                self.hass,
+                self._make_signal("0_0_7"),
+                _on_winter,
+            ),
+            async_track_time_interval(
+                self.hass, _hourly_tick, timedelta(hours=1)
+            ),
+        ]
+
     async def async_start(self) -> None:
         """Start the WebSocket connection and wait for initial device state.
 
@@ -223,6 +289,9 @@ class OnnaCoordinator:
 
     async def async_stop(self) -> None:
         """Cancel the background connection task and clean up."""
+        for unsub in self._seasonal_unsubs:
+            unsub()
+        self._seasonal_unsubs = []
         await self.client.async_shutdown()
         if self._task:
             self._task.cancel()

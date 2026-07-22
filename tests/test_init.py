@@ -44,6 +44,7 @@ async def test_setup_entry_stores_coordinator_in_hass_data():
 
     mock_coord = MagicMock()
     mock_coord.async_start = AsyncMock()
+    mock_coord.async_start_seasonal = AsyncMock()
 
     with patch("custom_components.onna.OnnaClient"), \
          patch("custom_components.onna.OnnaCoordinator", return_value=mock_coord), \
@@ -69,6 +70,7 @@ async def test_setup_entry_forwards_to_sensor_and_binary_sensor_platforms():
 
     mock_coord = MagicMock()
     mock_coord.async_start = AsyncMock()
+    mock_coord.async_start_seasonal = AsyncMock()
 
     with patch("custom_components.onna.OnnaClient"), \
          patch("custom_components.onna.OnnaCoordinator", return_value=mock_coord):
@@ -99,6 +101,7 @@ async def test_unload_entry_stops_coordinator_and_removes_data():
 
     mock_coord = MagicMock()
     mock_coord.async_start = AsyncMock()
+    mock_coord.async_start_seasonal = AsyncMock()
     mock_coord.async_stop = AsyncMock()
 
     with patch("custom_components.onna.OnnaClient"), \
@@ -249,6 +252,7 @@ async def test_setup_entry_registers_update_listener():
     entry = _make_entry()
     mock_coord = MagicMock()
     mock_coord.async_start = AsyncMock()
+    mock_coord.async_start_seasonal = AsyncMock()
 
     with patch("custom_components.onna.OnnaClient"), \
          patch("custom_components.onna.OnnaCoordinator", return_value=mock_coord):
