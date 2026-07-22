@@ -228,6 +228,46 @@ def test_extra_attrs_expose_seasonal_pause():
     assert attrs["seasonal_pause_active"] is True
 
 
+def test_general_exposes_outdoor_ema():
+    coord = _make_coordinator()
+    coord.outdoor_ema_snapshot = MagicMock(return_value=(18.5, 123.0))
+    gen = OnnaGeneralClimate(coord)
+    attrs = gen.extra_state_attributes or {}
+    assert attrs["outdoor_ema"] == 18.5
+    assert attrs["outdoor_ema_updated"] == 123.0
+
+
+def test_general_without_ema_has_no_attr():
+    coord = _make_coordinator()
+    coord.outdoor_ema_snapshot = MagicMock(return_value=(None, None))
+    gen = OnnaGeneralClimate(coord)
+    attrs = gen.extra_state_attributes or {}
+    assert "outdoor_ema" not in attrs
+
+
+@pytest.mark.anyio
+async def test_general_restores_ema_into_coordinator(monkeypatch):
+    coord = _make_coordinator()
+    coord.seed_outdoor_ema = MagicMock()
+    gen = OnnaGeneralClimate(coord)
+    gen.hass = MagicMock()
+
+    last_state = MagicMock()
+    last_state.state = "heat"
+    last_state.attributes = {"outdoor_ema": 17.0, "outdoor_ema_updated": 99.0}
+
+    async def _fake_last_state():
+        return last_state
+    gen.async_get_last_state = _fake_last_state
+    gen.async_on_remove = MagicMock()
+    monkeypatch.setattr(
+        "custom_components.onna.climate.async_dispatcher_connect",
+        MagicMock(return_value=MagicMock()),
+    )
+    await gen.async_added_to_hass()
+    coord.seed_outdoor_ema.assert_called_once_with(17.0, 99.0)
+
+
 
 # ---------------------------------------------------------------------------
 # OnnaClimate — initial state

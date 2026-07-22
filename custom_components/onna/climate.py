@@ -908,6 +908,14 @@ class OnnaGeneralClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             return HVACAction.OFF
         return HVACAction.HEATING if self._winter else HVACAction.COOLING
 
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        """Surface the installation-wide outdoor EMA (also persisted for restore)."""
+        value, updated = self._coordinator.outdoor_ema_snapshot()
+        if value is None:
+            return None
+        return {"outdoor_ema": value, "outdoor_ema_updated": updated}
+
     async def async_turn_on(self) -> None:
         await self._coordinator.client.async_set_address_value(_GENERAL_ONOFF_W, 1)
 
@@ -970,6 +978,11 @@ class OnnaGeneralClimate(OnnaEntity, ClimateEntity, RestoreEntity):
                 self._hvac_mode = HVACMode(last_state.state)
             if (temp := last_state.attributes.get("temperature")) is not None:
                 self._target_temp = float(temp)
+            ema = last_state.attributes.get("outdoor_ema")
+            if ema is not None:
+                self._coordinator.seed_outdoor_ema(
+                    float(ema), last_state.attributes.get("outdoor_ema_updated")
+                )
 
         self.async_on_remove(
             async_dispatcher_connect(
