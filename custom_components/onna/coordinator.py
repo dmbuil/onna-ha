@@ -34,7 +34,13 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .client import OnnaClient
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    DEFAULT_HEAT_OFF_ABOVE,
+    DEFAULT_COOL_OFF_BELOW,
+    SEASONAL_HYSTERESIS,
+)
+from .seasonal import OutdoorEMA, evaluate_gate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,6 +51,10 @@ SIGNAL_ADDRESS_UPDATE = f"{DOMAIN}_address_update_{{address_id}}"
 # Fired with a bool whenever the WebSocket connection to Onna comes up or
 # drops; entities use it to refresh their ``available`` state.
 SIGNAL_CONNECTION = f"{DOMAIN}_connection_update"
+
+# Fired with a bool whenever the installation-wide seasonal gate opens/closes;
+# every zone entity listens and pauses/resumes exactly like the window pause.
+SIGNAL_SEASONAL_GATE = f"{DOMAIN}_seasonal_gate"
 
 
 class OnnaCoordinator:
@@ -68,6 +78,15 @@ class OnnaCoordinator:
         # duplicate client callbacks from the same address being registered
         # by multiple entities (e.g. _WINTER_ADDR is shared by all zones).
         self._registered: set[str] = set()
+        # --- Seasonal gating (installation-wide) ---
+        self._outdoor_entity: str | None = None
+        self._heat_off_above = DEFAULT_HEAT_OFF_ABOVE
+        self._cool_off_below = DEFAULT_COOL_OFF_BELOW
+        self._ema = OutdoorEMA()
+        self._gate_active = False
+        self._last_outdoor_reading: float | None = None
+        # Cleanup handles for the live trackers wired in async_start_seasonal.
+        self._seasonal_unsubs: list = []
         client.on_connection_change = self._handle_connection_change
 
     @property
@@ -107,6 +126,51 @@ class OnnaCoordinator:
             async_dispatcher_send(self.hass, self._make_signal(address_id), value)
 
         self.client.register_address_callback(address_id, _on_update)
+
+    def configure_seasonal(
+        self,
+        outdoor_entity_id: str | None,
+        heat_off_above: float,
+        cool_off_below: float,
+    ) -> None:
+        """Store the seasonal-gating configuration (called before entity setup)."""
+        self._outdoor_entity = outdoor_entity_id or None
+        self._heat_off_above = float(heat_off_above)
+        self._cool_off_below = float(cool_off_below)
+
+    def seed_outdoor_ema(self, value: float | None, updated_at: float | None) -> None:
+        """Restore a persisted EMA (called by the general thermostat on restore)."""
+        self._ema = OutdoorEMA(value=value, updated_at=updated_at)
+
+    def outdoor_ema_snapshot(self) -> tuple:
+        """Return (value, updated_at) for persistence / diagnostics."""
+        return self._ema.value, self._ema.updated_at
+
+    @property
+    def seasonal_gate_active(self) -> bool:
+        return self._gate_active
+
+    def _apply_reading(self, now: float, reading: float) -> None:
+        """Fold a new outdoor reading into the EMA and re-evaluate the gate."""
+        self._last_outdoor_reading = reading
+        self._ema.update(now, reading)
+        self._reevaluate()
+
+    @callback
+    def _reevaluate(self) -> None:
+        """Recompute the gate; dispatch only on a change."""
+        is_winter = bool(self.data.get("0_0_7", True))
+        new_gate = evaluate_gate(
+            is_winter,
+            self._ema.value,
+            self._heat_off_above,
+            self._cool_off_below,
+            self._gate_active,
+            SEASONAL_HYSTERESIS,
+        )
+        if new_gate != self._gate_active:
+            self._gate_active = new_gate
+            async_dispatcher_send(self.hass, SIGNAL_SEASONAL_GATE, new_gate)
 
     async def async_start(self) -> None:
         """Start the WebSocket connection and wait for initial device state.
