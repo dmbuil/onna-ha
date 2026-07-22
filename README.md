@@ -29,6 +29,14 @@ changes in real time, so entities update instantly without polling.
   * [Sensor](#sensor)
   * [Binary Sensor](#binary-sensor)
   * [Valve](#valve)
+  * [Fan](#fan)
+  * [Climate](#climate)
+* [Smart thermostat](#smart-thermostat)
+  * [Presets](#presets)
+  * [Overshoot damping](#overshoot-damping)
+  * [Seasonal gating](#seasonal-gating)
+  * [Monitoring sensors](#monitoring-sensors)
+  * [Options](#options)
 * [Technical Details](#technical-details)
 * [Security model](#security-model)
 * [Development](#development)
@@ -150,6 +158,156 @@ All entities are grouped under a single **Onna** device.
 | Name          | Properties                    | Notes                                                                                       |
 | ------------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
 | Fancoil Salón | on/off · percentage (0–100 %) | Read-only — valve state (`1_7_1`) and fan speed (`1_7_3`) combined into a single fan entity |
+
+### Climate
+
+Each heating/cooling zone is exposed as a climate entity, plus a single master
+thermostat for the whole installation.
+
+| Name                | Type                          | Notes                                                          |
+| ------------------- | ----------------------------- | -------------------------------------------------------------- |
+| Salón+Cocina        | Zone thermostat (`HEAT_COOL`) | Dual setpoint + presets                                        |
+| Dorm. Principal     | Zone thermostat (`HEAT_COOL`) | Dual setpoint + presets                                        |
+| Dorm. 2 / 3 / 4     | Zone thermostat (`HEAT_COOL`) | Dual setpoint + presets                                        |
+| Temperatura General | Master thermostat             | Write-only broadcast of setpoint / on-off / mode to all zones |
+
+**Zone thermostats** are dual-setpoint range entities: `target_temp_low` is the
+winter/heating setpoint and `target_temp_high` the summer/cooling setpoint. The
+hardware tracks only **one** setpoint per zone and the installation has a single
+global winter/summer mode (`0_0_7`), so **only the setpoint of the active season
+is written to the KNX bus** — the other slider is Home Assistant state until the
+season flips, at which point the zone automatically applies the correct setpoint.
+`hvac_action` reflects the real underfloor demand (`HEATING` / `COOLING` /
+`IDLE` / `OFF`). Each zone supports native **presets** (see below) and can
+optionally take an external room sensor and a window sensor (configured under
+*Zone sensors* in the options flow).
+
+> [!NOTE]
+> Turning a zone off uses the explicit `OFF` HVAC mode — dragging a slider never
+> toggles the zone. The **general** thermostat keeps the `7 °C = OFF` shortcut on
+> its single slider.
+
+**General thermostat** ("Temperatura General") is a write-only master that
+broadcasts a common setpoint and on/off/mode to every zone at once. It has no
+current-temperature readback (state is kept locally and restored across
+restarts).
+
+## Smart thermostat
+
+Optional, **opt-in** enhancements layered on top of the native control. Out of
+the box nothing changes: presets ship with sensible defaults, overshoot damping
+only acts on zones that have an external sensor, and seasonal gating stays
+inactive until an outdoor source is configured.
+
+### Presets
+
+Every zone exposes four presets — **Away**, **Eco**, **Sleep**, **Comfort** —
+plus **Manual** (`none`). Each preset stores a *(heating, cooling)* pair, so when
+the installation-wide season flips the zone automatically applies the matching
+setpoint without any user action. The preset temperatures are **global** (shared
+by all zones) and configured in the options flow. Defaults:
+
+| Preset  | Heating (winter / `low`) | Cooling (summer / `high`) |
+| ------- | :----------------------: | :-----------------------: |
+| Away    |          16.0 °C         |          30.0 °C          |
+| Eco     |          18.0 °C         |          27.0 °C          |
+| Sleep   |          19.0 °C         |          26.0 °C          |
+| Comfort |          21.0 °C         |          24.0 °C          |
+
+The heating value must be ≤ the cooling value for every preset (validated in the
+options flow). Selecting a preset loads both sliders and writes the active-season
+value; dragging a slider, or an external setpoint change, drops the zone back to
+**Manual**.
+
+### Overshoot damping
+
+Radiant floors have thermal inertia: after a zone stops calling for heat its
+actuator closes but the slab keeps releasing (or, in summer, absorbing) stored
+energy, so the room coasts past target. When a zone has an **external room
+sensor** configured, the integration learns that coast per zone and per season
+from the real room temperature and **pre-dampens the written setpoint** so the
+room settles closer to target.
+
+* Self-calibrating — an exponential moving average of the observed coast; no
+  tuning required.
+* Applied only once the learned coast is meaningful (≥ 0.2 °C) and clamped to a
+  maximum of 2 °C.
+* Works in both heating and cooling, and survives restarts.
+* Only affects zones with an external sensor — the Onna probe cannot measure the
+  true room overshoot.
+
+**Formulas.** On each *demand-off → coast* cycle a sample is measured, blended
+into the per-season learned value, and subtracted from (or, in summer, added to)
+the written setpoint:
+
+```text
+# 1. Sample the coast over the window (default 90 min), clamped to [0, 3] °C
+sample = peak(ext_temp)   − start      # heating  (room overshoots upward)
+sample = start − trough(ext_temp)      # cooling  (room undershoots downward)
+
+# 2. Blend into the learned value (EMA, α = 0.3) — per zone, per season
+learned = 0.3 × sample + 0.7 × learned
+
+# 3. Damp the written setpoint (only when learned ≥ 0.2 °C, capped at 2 °C)
+damping       = min(learned, 2.0)
+onna_setpoint = compensated_setpoint − damping     # heating
+onna_setpoint = compensated_setpoint + damping     # cooling
+```
+
+Where `start` is the room temperature at demand-off, `peak` / `trough` the
+extreme reached during the coast window, and `compensated_setpoint` the target
+after external-sensor offset compensation. The final `onna_setpoint` is clamped
+to the 7–35 °C range before it is written to the bus.
+
+### Seasonal gating
+
+The community system runs one season at a time (heat **or** cool). Seasonal
+gating pauses zones when the outdoor climate makes the current mode pointless —
+heating during a warm spell, cooling during a cold snap — based on a **48-hour
+moving average** of an outdoor source (a `weather` entity or a temperature
+`sensor`).
+
+* Winter: pause when the outdoor average rises above the *heat-off* threshold
+  (default 20 °C). Summer: pause when it drops below the *cool-off* threshold
+  (default 16 °C). A ±0.5 °C hysteresis prevents flapping.
+* Pausing turns the affected zones off (and back on when the gate clears),
+  exactly like the window-pause; a manual turn on/off always wins.
+* Installation-wide and independent of the window-pause — a zone resumes only
+  when no pause is active.
+* **Fails open**: with no outdoor source available, no gating is applied.
+
+> [!WARNING]
+> Seasonal gating physically turns zones on/off over KNX. Set the thresholds to
+> match your climate before relying on it, and test with a temporary value first.
+
+### Monitoring sensors
+
+Two optional sensors let you graph how the smart layer adapts over time
+(Settings → *History*):
+
+| Name                     | Unit | Created when …                              | Shows                                                                 |
+| ------------------------ | ---- | ------------------------------------------- | --------------------------------------------------------------------- |
+| Media Exterior           | °C   | an outdoor source is configured             | the 48-hour outdoor EMA that drives seasonal gating                   |
+| `<Zone>` Inercia Aprendida | °C | the zone has an external sensor configured  | the learned overshoot for the **active** season (rises as it adapts)  |
+
+> [!NOTE]
+> `Inercia Aprendida` reports the *learned* coast so you can watch the adaptation
+> continuously; the damping actually applied to the setpoint equals it once it
+> passes 0.2 °C (and is 0 below that).
+
+### Options
+
+Configure everything under **Settings → Devices & Services → Onna → Configure**:
+
+| Menu entry     | What it configures                                                              |
+| -------------- | ------------------------------------------------------------------------------- |
+| Zone sensors   | Per-zone external temperature sensor and window sensor                          |
+| General        | Setpoint hysteresis and window-open delay                                       |
+| Presets        | The 8 preset temperatures (4 presets × heating/cooling)                         |
+| Smart features | Outdoor source, winter/summer gating thresholds, and the overshoot coast window |
+
+Changing any option reloads the integration, so new values apply without
+restarting Home Assistant.
 
 ## Technical Details
 
