@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from custom_components.onna.sensor import OnnaSensor, _FLOW_STALENESS_TIMEOUT
 from custom_components.onna.coordinator import SIGNAL_ADDRESS_UPDATE
+from homeassistant.components.sensor import SensorDeviceClass
 
 
 def _make_coordinator(data=None):
@@ -219,3 +220,65 @@ def test_non_flow_sensor_no_timer():
     coord.client._onna_id = "test_id"
     sensor = OnnaSensor(coord, "0_5_3", "Potencia", "W", "power", "measurement")
     assert sensor._is_flow_sensor is False
+
+
+# Smart-layer monitoring sensors (async_setup_entry)
+# ---------------------------------------------------------------------------
+
+def _setup_coord(sensor_addresses=None, climate_addresses=None):
+    coord = _make_coordinator()
+    coord.device_config = {
+        "sensor_addresses": sensor_addresses or {},
+        "climate_addresses": climate_addresses or {},
+    }
+    coord.register_address = MagicMock()
+    return coord
+
+
+async def _run_setup(coord, options):
+    from custom_components.onna.sensor import async_setup_entry
+    hass = MagicMock()
+    hass.data = {"onna": {"e1": coord}}
+    entry = MagicMock()
+    entry.entry_id = "e1"
+    entry.options = options
+    added = []
+    await async_setup_entry(hass, entry, lambda ents: added.extend(ents))
+    return added
+
+
+_ZONES = {
+    "zone_0": ["Salón+Cocina", "1_0_4", "1_0_3", "1_0_2", "1_0_1", "1_0_0", "1_0_7"],
+    "zone_1": ["Dorm. Principal", "1_1_4", "1_1_3", "1_1_2", "1_1_1", "1_1_0", "1_1_7"],
+}
+
+
+@pytest.mark.anyio
+async def test_setup_creates_ema_sensor_when_source_configured():
+    coord = _setup_coord()
+    added = await _run_setup(coord, {"outdoor_source": "weather.home"})
+    ids = [e._attr_unique_id for e in added]
+    assert "onna_outdoor_ema" in ids
+    ema = next(e for e in added if e._attr_unique_id == "onna_outdoor_ema")
+    assert str(ema._attr_device_class) == str(SensorDeviceClass.TEMPERATURE)
+    assert ema._attr_native_unit_of_measurement == "°C"
+
+
+@pytest.mark.anyio
+async def test_setup_no_ema_sensor_without_source():
+    coord = _setup_coord()
+    added = await _run_setup(coord, {})
+    ids = [e._attr_unique_id for e in added]
+    assert "onna_outdoor_ema" not in ids
+
+
+@pytest.mark.anyio
+async def test_setup_creates_overshoot_sensor_only_for_override_zones():
+    coord = _setup_coord(climate_addresses=_ZONES)
+    added = await _run_setup(coord, {"climate_temp_override": {"zone_0": "sensor.ext"}})
+    ids = [e._attr_unique_id for e in added]
+    assert "onna_overshoot_1_0_1" in ids       # zone_0 has an override
+    assert "onna_overshoot_1_1_1" not in ids    # zone_1 has none
+    ov = next(e for e in added if e._attr_unique_id == "onna_overshoot_1_0_1")
+    assert ov._attr_native_unit_of_measurement == "°C"
+    assert getattr(ov, "_attr_device_class", None) is None
