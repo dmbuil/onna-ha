@@ -268,6 +268,47 @@ async def test_general_restores_ema_into_coordinator(monkeypatch):
     coord.seed_outdoor_ema.assert_called_once_with(17.0, 99.0)
 
 
+def test_publish_overshoot_writes_active_season_learned_winter():
+    from custom_components.onna.coordinator import SIGNAL_ADDRESS_UPDATE
+    zone = _make_zone_ext({"0_0_7": True}, learned_heat=0.4, learned_cool=0.7)
+    zone.hass = MagicMock()
+    with patch("custom_components.onna.climate.async_dispatcher_send") as send:
+        zone._publish_overshoot()
+    assert zone._coordinator.data["overshoot_1_0_1"] == 0.4
+    send.assert_called_once_with(
+        zone.hass, SIGNAL_ADDRESS_UPDATE.format(address_id="overshoot_1_0_1"), 0.4
+    )
+
+
+def test_publish_overshoot_writes_active_season_learned_summer():
+    zone = _make_zone_ext({"0_0_7": False}, learned_heat=0.4, learned_cool=0.7)
+    zone.hass = MagicMock()
+    with patch("custom_components.onna.climate.async_dispatcher_send"):
+        zone._publish_overshoot()
+    assert zone._coordinator.data["overshoot_1_0_1"] == 0.7
+
+
+def test_publish_overshoot_noop_without_learner():
+    zone = _make_zone({"0_0_7": True})
+    zone.hass = MagicMock()
+    with patch("custom_components.onna.climate.async_dispatcher_send") as send:
+        zone._publish_overshoot()
+    send.assert_not_called()
+    assert "overshoot_1_0_1" not in zone._coordinator.data
+
+
+def test_coast_elapsed_publishes_overshoot():
+    zone = _make_zone_ext({"0_0_7": True})
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._overshoot.start_sample(21.0, is_winter=True)
+    zone._overshoot.observe(21.8)
+    with patch("custom_components.onna.climate.async_dispatcher_send") as send:
+        zone._coast_elapsed(None)
+    assert zone._coordinator.data["overshoot_1_0_1"] > 0.0
+    send.assert_called_once()
+
+
 def test_coast_window_seconds_from_constructor():
     coord = _make_coordinator()
     zone = OnnaClimate(

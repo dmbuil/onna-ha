@@ -96,7 +96,10 @@ from homeassistant.components.climate import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.dispatcher import (
+    async_dispatcher_connect,
+    async_dispatcher_send,
+)
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -290,6 +293,11 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         self._overshoot: OvershootLearner | None = (
             OvershootLearner() if external_temp_entity_id else None
         )
+        # Seed the monitoring synthetic address so its sensor is not "unknown"
+        # on first render, before any coast has been learned (dispatch happens
+        # later, once hass is available).
+        if self._overshoot is not None:
+            coordinator.data[f"overshoot_{onoff_r_addr}"] = 0.0
         self._coast_window_s = int(coast_window_min) * 60
         # Cancellation handle for the coast-window timer; None when idle.
         self._coast_cancel_timer: Any = None
@@ -572,6 +580,9 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             )
         )
         self._subscribe_connection_signal()
+        # Push the (possibly restored) learned overshoot so its monitoring sensor
+        # reflects the correct value after a restart.
+        self._publish_overshoot()
         if self._external_temp:
             # Seed the external temperature from the current HA state machine
             # so compensation is active immediately (no wait for first push).
@@ -693,6 +704,30 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         self._is_on = bool(value)
         self.async_write_ha_state()
 
+    def _publish_overshoot(self) -> None:
+        """Publish the active-season learned overshoot as a synthetic address.
+
+        Feeds the per-zone monitoring sensor (see sensor.py) via the same
+        dispatcher path as real KNX addresses.  The *learned* value is exposed
+        (not the applied damping) so the sensor shows the adaptation continuously,
+        including while it is still below the application threshold.
+        """
+        if self._overshoot is None:
+            return
+        key = f"overshoot_{self._onoff_r}"
+        value = round(
+            self._overshoot.learned_heat if self._winter
+            else self._overshoot.learned_cool,
+            2,
+        )
+        self._coordinator.data[key] = value
+        if getattr(self, "hass", None) is not None:
+            async_dispatcher_send(
+                self.hass,
+                SIGNAL_ADDRESS_UPDATE.format(address_id=key),
+                value,
+            )
+
     def _abort_overshoot_sample(self) -> None:
         """Cancel the coast timer and drop any in-flight overshoot sample."""
         if self._coast_cancel_timer is not None:
@@ -707,6 +742,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         self._coast_cancel_timer = None
         if self._overshoot is not None and self._overshoot.sampling:
             self._overshoot.close_sample()
+            self._publish_overshoot()
             self.async_write_ha_state()
 
     def _resume_if_no_pause(self) -> None:
@@ -747,6 +783,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
                     self._coast_cancel_timer()
                     self._coast_cancel_timer = None
                 self._overshoot.close_sample()
+                self._publish_overshoot()
         self._demand = new_demand
         self.async_write_ha_state()
 
@@ -764,6 +801,8 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             )
             self.async_write_ha_state()
             self._last_written_setpoint = None
+            # The active season changed → the newly-active learned value differs.
+            self._publish_overshoot()
             if getattr(self, "hass", None) is not None:
                 self.hass.async_create_task(self._push_compensated_setpoint())
         else:
