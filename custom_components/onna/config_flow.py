@@ -19,9 +19,11 @@ from .config_parser import parse_device_config
 from .const import (
     CONF_HOST,
     CONF_ONNA_ID,
+    DEFAULT_PRESET_TEMPS,
     DEFAULT_SETPOINT_HYSTERESIS,
     DEFAULT_WINDOW_OPEN_DELAY,
     DOMAIN,
+    PRESET_KEYS,
 )
 
 _SCHEMA = vol.Schema(
@@ -119,7 +121,7 @@ class OnnaOptionsFlow(OptionsFlow):
     ) -> dict[str, Any]:
         return self.async_show_menu(
             step_id="init",
-            menu_options=["zone_picker", "general"],
+            menu_options=["zone_picker", "general", "presets"],
         )
 
     async def async_step_general(
@@ -155,6 +157,58 @@ class OnnaOptionsFlow(OptionsFlow):
             }
         )
         return self.async_show_form(step_id="general", data_schema=schema)
+
+    async def async_step_presets(
+        self, user_input: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Global preset (heat, cool) pairs, shared by every zone.
+
+        `heat` is used in winter (target_temp_low), `cool` in summer
+        (target_temp_high).  Enforces heat <= cool for every preset.
+        """
+        errors: dict[str, str] = {}
+        stored = self.config_entry.options.get("preset_temps", {})
+
+        def _pair(key: str) -> tuple[float, float]:
+            if key in stored:
+                lo, hi = stored[key]
+                return float(lo), float(hi)
+            return DEFAULT_PRESET_TEMPS[key]
+
+        if user_input is not None:
+            preset_temps: dict[str, list[float]] = {}
+            for key in PRESET_KEYS:
+                heat = float(user_input[f"{key}_heat"])
+                cool = float(user_input[f"{key}_cool"])
+                if heat > cool:
+                    errors["base"] = "preset_heat_gt_cool"
+                preset_temps[key] = [heat, cool]
+            if not errors:
+                return self.async_create_entry(
+                    data={
+                        **dict(self.config_entry.options),
+                        "preset_temps": preset_temps,
+                    }
+                )
+
+        fields: dict[Any, Any] = {}
+        for key in PRESET_KEYS:
+            heat_default, cool_default = _pair(key)
+            fields[vol.Optional(f"{key}_heat", default=heat_default)] = NumberSelector(
+                NumberSelectorConfig(
+                    min=7.0, max=35.0, step=0.5,
+                    unit_of_measurement="°C", mode=NumberSelectorMode.BOX,
+                )
+            )
+            fields[vol.Optional(f"{key}_cool", default=cool_default)] = NumberSelector(
+                NumberSelectorConfig(
+                    min=7.0, max=35.0, step=0.5,
+                    unit_of_measurement="°C", mode=NumberSelectorMode.BOX,
+                )
+            )
+        return self.async_show_form(
+            step_id="presets", data_schema=vol.Schema(fields), errors=errors
+        )
 
     async def async_step_zone_picker(
         self, user_input: dict[str, Any] | None = None

@@ -3,7 +3,13 @@
 Two entity types are created:
 
   OnnaClimate       — one per zone (Salón+Cocina, Dorm. Principal, Dorm. 2…).
-                      Reads current temp and ON/OFF state from KNX; writes setpoint and ON/OFF.
+                      A dual-setpoint range thermostat: hvac_mode is OFF or
+                      HEAT_COOL, with target_temp_low (winter/heat) and
+                      target_temp_high (summer/cool).  The installation-wide
+                      season (0_0_7) decides which setpoint is active; only the
+                      active one is written to the KNX bus (1_X_2).  Supports
+                      native presets (away/eco/sleep/comfort, plus none=Manual),
+                      each a global (heat, cool) pair.
                       Optionally accepts an external HA sensor as the temperature source
                       (see CLIMATE_TEMP_OVERRIDE in const.py and the section below).
 
@@ -11,13 +17,13 @@ Two entity types are created:
                        setpoint and ON/OFF to the whole installation (addresses 0_0_1/2/3).
                        It has no current-temperature sensor and no read-back; state is local.
 
---- Setpoint 7.0 °C ⇄ OFF equivalence ---
+--- Setpoint 7.0 °C ⇄ OFF equivalence (general thermostat only) ---
 
-The temperature slider alone fully controls a thermostat (zones and general):
-setting the minimum (7.0 °C) is equivalent to turning it off — the last real
-target is preserved — and setting any higher value while off turns it back on.
-Only user-facing set_temperature calls behave this way; the compensated write
-path may legitimately write 7.0 to the KNX bus without toggling the zone.
+For the general/master thermostat the temperature slider fully controls the
+installation: setting the minimum (7.0 °C) is equivalent to turning it off (the
+last real target is preserved) and any higher value while off turns it back on.
+Zone thermostats do NOT use this shortcut — they have an explicit OFF hvac_mode
+and two setpoints, so dragging a slider never toggles the zone on or off.
 
 --- Window open detection and thermostat pause ---
 
@@ -75,6 +81,13 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.climate import (
+    ATTR_TARGET_TEMP_HIGH,
+    ATTR_TARGET_TEMP_LOW,
+    PRESET_AWAY,
+    PRESET_COMFORT,
+    PRESET_ECO,
+    PRESET_NONE,
+    PRESET_SLEEP,
     ClimateEntity,
     ClimateEntityFeature,
     HVACAction,
@@ -89,6 +102,7 @@ from homeassistant.helpers.event import async_call_later, async_track_state_chan
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
+    DEFAULT_PRESET_TEMPS,
     DEFAULT_SETPOINT_HYSTERESIS,
     DEFAULT_WINDOW_OPEN_DELAY,
     DOMAIN,
@@ -121,6 +135,13 @@ async def async_setup_entry(
     window_sensors = entry.options.get("climate_window_sensor", {})
     hysteresis = float(entry.options.get("setpoint_hysteresis", DEFAULT_SETPOINT_HYSTERESIS))
     window_delay = int(entry.options.get("window_open_delay", DEFAULT_WINDOW_OPEN_DELAY))
+    # Merge configured preset pairs over the defaults so a partial option
+    # (e.g. only "comfort" customised) still yields a complete set.
+    raw_presets = entry.options.get("preset_temps", {})
+    preset_temps = {
+        key: tuple(raw_presets[key]) if key in raw_presets else DEFAULT_PRESET_TEMPS[key]
+        for key in DEFAULT_PRESET_TEMPS
+    }
     entities: list[ClimateEntity] = []
 
     for zone_id, info in coordinator.device_config["climate_addresses"].items():
@@ -138,6 +159,7 @@ async def async_setup_entry(
             window_sensor_entity_id=window_sensors.get(zone_id),
             setpoint_hysteresis=hysteresis,
             window_open_delay=window_delay,
+            preset_temps=preset_temps,
         ))
 
     coordinator.register_address(_WINTER_ADDR)
@@ -168,12 +190,16 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
     """
     _attr_has_entity_name = True
     _attr_should_poll = False
-    _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT, HVACMode.COOL]
+    _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT_COOL]
     _attr_supported_features = (
-        ClimateEntityFeature.TARGET_TEMPERATURE
+        ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
+        | ClimateEntityFeature.PRESET_MODE
         | ClimateEntityFeature.TURN_ON
         | ClimateEntityFeature.TURN_OFF
     )
+    _attr_preset_modes = [
+        PRESET_NONE, PRESET_AWAY, PRESET_ECO, PRESET_SLEEP, PRESET_COMFORT
+    ]
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_target_temperature_step = 0.5
     _attr_min_temp = 7.0
@@ -193,6 +219,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         window_sensor_entity_id: str | None = None,
         setpoint_hysteresis: float = DEFAULT_SETPOINT_HYSTERESIS,
         window_open_delay: int = DEFAULT_WINDOW_OPEN_DELAY,
+        preset_temps: dict[str, tuple[float, float]] | None = None,
     ) -> None:
         self._coordinator    = coordinator
         self._attr_name      = name
@@ -211,12 +238,21 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         # Tunables from the options flow ("General settings").
         self._setpoint_hysteresis = setpoint_hysteresis
         self._window_open_delay   = window_open_delay
+        # Global (heat, cool) preset pairs shared by all zones.  Falls back to
+        # the sensible defaults when the options flow has not set them.
+        self._preset_temps = preset_temps or DEFAULT_PRESET_TEMPS
+        self._preset_mode: str = PRESET_NONE
 
         data = coordinator.data
         self._onna_temp: float | None    = data.get(temp_addr)
         self._ext_temp: float | None     = None
         self._ext_available: bool        = False
         self._target_temp: float | None  = data.get(setpoint_r_addr, 20.0)
+        # Winter/heat and summer/cool are two HA-owned setpoints.  _target_temp
+        # always holds the *active* season's value (the one the KNX zone tracks
+        # and echoes on 1_X_3); _inactive_target parks the other season.  On a
+        # cold start both start equal — the user or a preset then diverge them.
+        self._inactive_target: float = self._target_temp
         self._is_on: bool  = bool(data.get(onoff_r_addr, False))
         self._demand: bool = bool(data.get(demand_addr, False))
         self._winter: bool = bool(data.get(_WINTER_ADDR, True))
@@ -243,14 +279,29 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         return self._onna_temp
 
     @property
-    def target_temperature(self) -> float | None:
-        return self._target_temp
+    def target_temperature(self) -> None:
+        # Range entity — the two setpoints are exposed via low/high below.
+        return None
+
+    @property
+    def target_temperature_low(self) -> float | None:
+        """Winter/heating setpoint."""
+        return self._target_temp if self._winter else self._inactive_target
+
+    @property
+    def target_temperature_high(self) -> float | None:
+        """Summer/cooling setpoint."""
+        return self._inactive_target if self._winter else self._target_temp
 
     @property
     def hvac_mode(self) -> HVACMode:
         if not self._is_on:
             return HVACMode.OFF
-        return HVACMode.HEAT if self._winter else HVACMode.COOL
+        return HVACMode.HEAT_COOL
+
+    @property
+    def preset_mode(self) -> str:
+        return self._preset_mode
 
     @property
     def hvac_action(self) -> HVACAction:
@@ -318,34 +369,51 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             await self._coordinator.client.async_set_address_value(self._setpoint_w, setpoint)
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
-        """Accept a user setpoint change from HA and push it to Onna.
+        """Accept a range setpoint change (target_temp_low / target_temp_high).
 
-        The temperature slider alone fully controls the zone:
-          • min_temp (7.0 °C) is equivalent to turning the zone off.  The last
-            real target is kept so the UI restores it when the zone comes back.
-          • Any higher value while the zone is off turns it back on.
-        Both paths delegate to async_turn_on/off so their side effects apply
-        (notably clearing the window-pause flag — a temperature change counts
-        as a user override).
+        `low` is the winter/heating value, `high` the summer/cooling value.
+        Only the season-active one is written to KNX; the other is parked in
+        _inactive_target.  ON/OFF is controlled separately via hvac_mode —
+        setting a temperature never toggles the zone.
         """
-        temp = kwargs.get(ATTR_TEMPERATURE)
-        if temp is None:
+        low = kwargs.get(ATTR_TARGET_TEMP_LOW)
+        high = kwargs.get(ATTR_TARGET_TEMP_HIGH)
+        if low is None and high is None:
             return
-        if float(temp) <= self._attr_min_temp:
-            await self.async_turn_off()
-            return
-        was_off = not self._is_on
-        self._target_temp = float(temp)
+        active = low if self._winter else high
+        inactive = high if self._winter else low
+        if active is not None:
+            self._target_temp = float(active)
+        if inactive is not None:
+            self._inactive_target = float(inactive)
         # Write HA state immediately with the user's intent so the UI updates
         # before the Onna echo arrives (the echo carries the *compensated* value
         # and must not overwrite this stored user intent).
+        # A manual slider change always drops the zone to Manual (none).
+        self._preset_mode = PRESET_NONE
         self.async_write_ha_state()
         # Clear last_written_setpoint so the next _push call always writes,
         # even if the compensated value happens to equal the previous write.
         self._last_written_setpoint = None
         await self._push_compensated_setpoint()
-        if was_off:
-            await self.async_turn_on()
+
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        """Select a preset: load its (heat, cool) pair and write the active one.
+
+        `none` is Manual — it leaves both sliders as they are and writes
+        nothing (the zone keeps following the general broadcast / Onna app).
+        """
+        self._preset_mode = preset_mode
+        if preset_mode != PRESET_NONE:
+            heat, cool = self._preset_temps[preset_mode]
+            if self._winter:
+                self._target_temp, self._inactive_target = float(heat), float(cool)
+            else:
+                self._target_temp, self._inactive_target = float(cool), float(heat)
+        self.async_write_ha_state()
+        if preset_mode != PRESET_NONE:
+            self._last_written_setpoint = None
+            await self._push_compensated_setpoint()
 
     async def async_turn_on(self) -> None:
         """Turn the zone thermostat on and clear any window-pause flag.
@@ -366,18 +434,14 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         await self._coordinator.client.async_set_address_value(self._onoff_w, 0)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
-        """Handle mode changes from the HA climate card.
+        """OFF turns the zone off; HEAT_COOL turns it on.
 
-        OFF is delegated to async_turn_off.  HEAT and COOL cannot change the
-        global installation mode (0_0_7) per-zone — use OnnaGeneralClimate for
-        that.  However, when the HA UI shows a zone as OFF and the user clicks
-        HEAT or COOL, the intent is clearly "turn this zone on", so we delegate
-        to async_turn_on.  The actual heat/cool mode is already set globally and
-        will be reflected in hvac_mode via _handle_winter.
+        The actual heat-vs-cool behaviour is decided by the global season
+        (0_0_7) and surfaced through hvac_action, not hvac_mode.
         """
         if hvac_mode == HVACMode.OFF:
             await self.async_turn_off()
-        elif hvac_mode in (HVACMode.HEAT, HVACMode.COOL):
+        else:
             await self.async_turn_on()
 
     async def async_added_to_hass(self) -> None:
@@ -397,9 +461,23 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         """
         restored_window_pause = False
         if last_state := await self.async_get_last_state():
-            if (temp := last_state.attributes.get("temperature")) is not None:
+            low = last_state.attributes.get("target_temp_low")
+            high = last_state.attributes.get("target_temp_high")
+            if low is not None and high is not None:
                 # Prefer the restored user intent over the coordinator seed.
+                if self._winter:
+                    self._target_temp = float(low)
+                    self._inactive_target = float(high)
+                else:
+                    self._target_temp = float(high)
+                    self._inactive_target = float(low)
+            elif (temp := last_state.attributes.get("temperature")) is not None:
+                # Upgrade from the pre-presets single-setpoint entity.
                 self._target_temp = float(temp)
+                self._inactive_target = float(temp)
+            preset = last_state.attributes.get("preset_mode")
+            if preset in self._attr_preset_modes:
+                self._preset_mode = preset
             if self._external_temp:
                 # Restore the last compensated value so _handle_setpoint can
                 # detect and discard the stale echo Onna sends on reconnect.
@@ -417,7 +495,9 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             # recorder state — but never override a live value that already
             # arrived in coordinator.data.
             if self._onoff_r not in self._coordinator.data:
-                if last_state.state in (HVACMode.HEAT, HVACMode.COOL):
+                if last_state.state in (
+                    HVACMode.HEAT_COOL, HVACMode.HEAT, HVACMode.COOL
+                ):
                     self._is_on = True
                 elif last_state.state == HVACMode.OFF:
                     self._is_on = False
@@ -513,37 +593,34 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
     def _handle_setpoint(self, value: Any) -> None:
         """Receive a setpoint read-back from Onna (address 1_X_3).
 
-        Two-way logic to distinguish our own compensated echo from genuine changes:
+        Distinguishes our own write-echo from a genuine external change:
 
-        (1) Value matches _last_written_setpoint (online or offline):
-            This is the echo of our own compensated write.  Accepting it would
-            silently overwrite _target_temp with the compensated value (which
-            differs from the user's intent by the probe offset).  Ignore.
-            _last_written_setpoint is persisted via extra_state_attributes so
-            this check also works after an HA restart.
-
-        (2) Any other value — accept as a genuine change:
-            • General thermostat broadcast (0_0_2 → 1_X_3 via Onna) — e.g. the
-              user changed the installation setpoint from the Onna app.
-            • Physical thermostat wheel adjusted.
-            • Onna mobile app changed a specific zone.
-            Update _target_temp and, if external compensation is active, clear
-            _last_written_setpoint so the next sensor update recomputes the
-            compensated value against the new base setpoint.
+        (1) Compensated-write echo (external sensor active): value equals the
+            last compensated value we wrote — ignore, keep _target_temp and the
+            current preset.  _last_written_setpoint is persisted via
+            extra_state_attributes so this also works after an HA restart.
+        (2) Plain-write echo / no-op: value equals the current active setpoint —
+            ignore, keep the preset.
+        (3) Genuine external change (general broadcast, Onna app, physical
+            wheel): adopt into the active slider and drop to Manual (none).  If
+            external compensation is active, clear _last_written_setpoint so the
+            next sensor update recomputes against the new base.
         """
         if (
             self._external_temp
             and self._last_written_setpoint is not None
             and round(value, 1) == round(self._last_written_setpoint, 1)
         ):
-            # (1) Echo of our own compensated write (online or offline) — ignore.
-            pass
+            pass  # (1) compensated echo
+        elif (
+            self._target_temp is not None
+            and round(value, 1) == round(self._target_temp, 1)
+        ):
+            pass  # (2) plain echo / no-op
         else:
-            # (2)/(3) Genuine change from General thermostat, Onna app, or physical
-            # thermostat wheel — accept.  If external compensation is active, clear
-            # _last_written_setpoint so the next sensor update recomputes and
-            # re-pushes the correct compensated value against the new base.
+            # (3) genuine external change
             self._target_temp = value
+            self._preset_mode = PRESET_NONE
             if self._external_temp and self._ext_available:
                 self._last_written_setpoint = None
         self.async_write_ha_state()
@@ -560,8 +637,22 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
 
     @callback
     def _handle_winter(self, value: Any) -> None:
-        self._winter = bool(value)
-        self.async_write_ha_state()
+        new_winter = bool(value)
+        if new_winter != self._winter:
+            # Season flipped: the active/inactive setpoints swap roles, and the
+            # newly-active value must be (re)written to the KNX bus.
+            self._winter = new_winter
+            self._target_temp, self._inactive_target = (
+                self._inactive_target,
+                self._target_temp,
+            )
+            self.async_write_ha_state()
+            self._last_written_setpoint = None
+            if getattr(self, "hass", None) is not None:
+                self.hass.async_create_task(self._push_compensated_setpoint())
+        else:
+            self._winter = new_winter
+            self.async_write_ha_state()
 
     @callback
     def _handle_external_temp(self, event: Any) -> None:

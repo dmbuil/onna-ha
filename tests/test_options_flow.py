@@ -161,3 +161,71 @@ async def test_options_general_saves_values_and_preserves_others():
     assert data["window_open_delay"] == 300
     assert isinstance(data["window_open_delay"], int)
     assert data["climate_temp_override"]["zone_1"] == "sensor.zone1_temp"
+
+
+# ---------------------------------------------------------------------------
+# Presets — global (heat, cool) pairs
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_options_init_menu_includes_presets():
+    flow = _options_flow()
+    result = await flow.async_step_init(user_input=None)
+    assert "presets" in result["menu_options"]
+
+
+@pytest.mark.anyio
+async def test_options_presets_form_shows_defaults():
+    flow = _options_flow()
+    result = await flow.async_step_presets(user_input=None)
+    assert result["type"] == "form"
+    assert result["step_id"] == "presets"
+    defaults = {str(k): k.default for k in result["data_schema"].schema}
+    assert defaults["away_heat"] == 16.0
+    assert defaults["away_cool"] == 30.0
+    assert defaults["comfort_heat"] == 21.0
+    assert defaults["comfort_cool"] == 24.0
+
+
+@pytest.mark.anyio
+async def test_options_presets_form_shows_current_values():
+    flow = _options_flow({"preset_temps": {"away": [15.0, 29.0]}})
+    result = await flow.async_step_presets(user_input=None)
+    defaults = {str(k): k.default for k in result["data_schema"].schema}
+    assert defaults["away_heat"] == 15.0
+    assert defaults["away_cool"] == 29.0
+    # untouched presets fall back to their defaults
+    assert defaults["eco_heat"] == 18.0
+
+
+@pytest.mark.anyio
+async def test_options_presets_saves_pairs_and_preserves_others():
+    existing = {"climate_temp_override": {"zone_1": "sensor.z1"}}
+    flow = _options_flow(current_options=existing)
+    user_input = {
+        "away_heat": 16.0, "away_cool": 30.0,
+        "eco_heat": 18.0, "eco_cool": 27.0,
+        "sleep_heat": 19.0, "sleep_cool": 26.0,
+        "comfort_heat": 20.0, "comfort_cool": 23.0,
+    }
+    result = await flow.async_step_presets(user_input=user_input)
+    assert result["type"] == "create_entry"
+    data = result["data"]
+    assert data["preset_temps"]["comfort"] == [20.0, 23.0]
+    assert data["preset_temps"]["away"] == [16.0, 30.0]
+    assert data["climate_temp_override"]["zone_1"] == "sensor.z1"
+
+
+@pytest.mark.anyio
+async def test_options_presets_rejects_heat_gt_cool():
+    flow = _options_flow()
+    user_input = {
+        "away_heat": 16.0, "away_cool": 30.0,
+        "eco_heat": 18.0, "eco_cool": 27.0,
+        "sleep_heat": 19.0, "sleep_cool": 26.0,
+        "comfort_heat": 25.0, "comfort_cool": 23.0,  # invalid: heat > cool
+    }
+    result = await flow.async_step_presets(user_input=user_input)
+    assert result["type"] == "form"
+    assert result["step_id"] == "presets"
+    assert result["errors"] == {"base": "preset_heat_gt_cool"}

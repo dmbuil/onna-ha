@@ -23,6 +23,10 @@ docs/recon/04-read-configuration.json
 # Machine-specific allowed-commands list; contains LAN IPs and SSH password
 .claude/
 
+# ── Deploy local config ──────────────────────────────────────────────────
+# Contiene tu host/IP y opciones SSH de Home Assistant
+scripts/deploy.env
+
 # ── Internal AI planning / session docs ──────────────────────────────────
 docs/superpowers/
 

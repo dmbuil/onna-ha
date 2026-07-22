@@ -51,7 +51,22 @@
       "init": {
         "menu_options": {
           "zone_picker": "Sensores por zona (temperatura externa / ventana)",
-          "general": "Ajustes generales (histéresis, retardo de ventana)"
+          "general": "Ajustes generales (histéresis, retardo de ventana)",
+          "presets": "Presets (temperaturas de Fuera / Eco / Dormir / Confort)"
+        }
+      },
+      "presets": {
+        "title": "Onna — presets",
+        "description": "Dos temperaturas por preset, iguales para todas las zonas. El valor de calefacción se usa cuando la instalación está en modo invierno; el de refrigeración cuando está en modo verano. El valor de calefacción debe ser menor o igual que el de refrigeración.",
+        "data": {
+          "away_heat": "Fuera — calefacción (°C)",
+          "away_cool": "Fuera — refrigeración (°C)",
+          "eco_heat": "Eco — calefacción (°C)",
+          "eco_cool": "Eco — refrigeración (°C)",
+          "sleep_heat": "Dormir — calefacción (°C)",
+          "sleep_cool": "Dormir — refrigeración (°C)",
+          "comfort_heat": "Confort — calefacción (°C)",
+          "comfort_cool": "Confort — refrigeración (°C)"
         }
       },
       "general": {
@@ -66,6 +81,9 @@
           "window_open_delay": "Tiempo que una ventana debe permanecer abierta antes de pausar el termostato de su zona. Las ventilaciones breves por debajo de este tiempo se ignoran. Por defecto: 600 segundos (10 minutos)."
         }
       }
+    },
+    "error": {
+      "preset_heat_gt_cool": "En cada preset, la temperatura de calefacción debe ser menor o igual que la de refrigeración."
     }
   }
 }

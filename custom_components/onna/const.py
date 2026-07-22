@@ -29,6 +29,20 @@ DEFAULT_SETPOINT_HYSTERESIS = 0.5
 # prevents brief ventilation events from toggling the heating.
 DEFAULT_WINDOW_OPEN_DELAY = 600
 
+# Global thermostat presets (same values for every zone).  Each preset stores a
+# (heat, cool) pair: `heat` is applied when the installation is in winter mode
+# (0_0_7 = 1) and maps to target_temp_low; `cool` is applied in summer mode
+# (0_0_7 = 0) and maps to target_temp_high.  Only the season-active value is
+# ever written to the KNX bus.  Users override these via the options flow
+# ("Presets"); the pairs are stored in entry.options["preset_temps"].
+PRESET_KEYS = ["away", "eco", "sleep", "comfort"]
+DEFAULT_PRESET_TEMPS: dict[str, tuple[float, float]] = {
+    "away":    (16.0, 30.0),
+    "eco":     (18.0, 27.0),
+    "sleep":   (19.0, 26.0),
+    "comfort": (21.0, 24.0),
+}
+
 # Maps unit suffix found in address names (e.g. "(W)") →
 # (ha_unit, ha_device_class, ha_state_class).  Used by config_parser.
 SENSOR_UNIT_SUFFIXES: dict[str, tuple] = {

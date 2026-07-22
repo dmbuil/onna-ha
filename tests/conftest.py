@@ -384,11 +384,12 @@ class _HVACAction(str, Enum):
 
 
 class _ClimateEntityFeature(int, Enum):
-    TARGET_TEMPERATURE = 1
-    PRESET_MODE        = 16
-    FAN_MODE           = 8
-    TURN_OFF           = 128
-    TURN_ON            = 256
+    TARGET_TEMPERATURE       = 1
+    TARGET_TEMPERATURE_RANGE = 2
+    PRESET_MODE              = 16
+    FAN_MODE                 = 8
+    TURN_OFF                 = 128
+    TURN_ON                  = 256
 
 
 class _ClimateEntity:
@@ -397,6 +398,7 @@ class _ClimateEntity:
     _attr_name                   = None
     _attr_unique_id              = None
     _attr_hvac_modes             = []
+    _attr_preset_modes           = None
     _attr_supported_features     = 0
     _attr_temperature_unit       = "°C"
     _attr_target_temperature_step = 1.0
@@ -404,6 +406,10 @@ class _ClimateEntity:
     @property
     def unique_id(self):
         return self._attr_unique_id
+
+    @property
+    def preset_modes(self):
+        return self._attr_preset_modes
 
     @property
     def hvac_mode(self):
@@ -429,6 +435,13 @@ climate_mod.ClimateEntity        = _ClimateEntity
 climate_mod.ClimateEntityFeature = _ClimateEntityFeature
 climate_mod.HVACMode             = _HVACMode
 climate_mod.HVACAction           = _HVACAction
+climate_mod.ATTR_TARGET_TEMP_LOW  = "target_temp_low"
+climate_mod.ATTR_TARGET_TEMP_HIGH = "target_temp_high"
+climate_mod.PRESET_NONE          = "none"
+climate_mod.PRESET_AWAY          = "away"
+climate_mod.PRESET_ECO           = "eco"
+climate_mod.PRESET_SLEEP         = "sleep"
+climate_mod.PRESET_COMFORT       = "comfort"
 
 # ---- homeassistant.components.switch ----
 switch_mod = _make_module("homeassistant.components.switch")

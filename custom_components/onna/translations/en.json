@@ -51,7 +51,22 @@
       "init": {
         "menu_options": {
           "zone_picker": "Zone sensors (external temperature / window)",
-          "general": "General settings (hysteresis, window delay)"
+          "general": "General settings (hysteresis, window delay)",
+          "presets": "Presets (Away / Eco / Sleep / Comfort temperatures)"
+        }
+      },
+      "presets": {
+        "title": "Onna — presets",
+        "description": "Two temperatures per preset, shared by every zone. The heating value is used while the installation is in winter mode; the cooling value while in summer mode. The heating value must be less than or equal to the cooling value.",
+        "data": {
+          "away_heat": "Away — heating (°C)",
+          "away_cool": "Away — cooling (°C)",
+          "eco_heat": "Eco — heating (°C)",
+          "eco_cool": "Eco — cooling (°C)",
+          "sleep_heat": "Sleep — heating (°C)",
+          "sleep_cool": "Sleep — cooling (°C)",
+          "comfort_heat": "Comfort — heating (°C)",
+          "comfort_cool": "Comfort — cooling (°C)"
         }
       },
       "general": {
@@ -66,6 +81,9 @@
           "window_open_delay": "How long a window must stay open before its zone thermostat is paused. Short ventilation bursts below this time are ignored. Default: 600 seconds (10 minutes)."
         }
       }
+    },
+    "error": {
+      "preset_heat_gt_cool": "For every preset the heating temperature must be less than or equal to the cooling temperature."
     }
   }
 }

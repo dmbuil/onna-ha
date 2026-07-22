@@ -37,9 +37,11 @@ def test_climate_current_temp_from_coordinator():
     assert zone.current_temperature == 21.5
 
 
-def test_climate_target_temp_from_coordinator():
+def test_climate_target_temp_low_from_coordinator():
+    # Default season is winter (0_0_7 defaults True) → active value maps to low.
     zone = _make_zone({"1_0_3": 22.0})
-    assert zone.target_temperature == 22.0
+    assert zone.target_temperature_low == 22.0
+    assert zone.target_temperature is None
 
 
 def test_climate_hvac_mode_off_when_zone_off():
@@ -48,16 +50,10 @@ def test_climate_hvac_mode_off_when_zone_off():
     assert zone.hvac_mode == HVACMode.OFF
 
 
-def test_climate_hvac_mode_heat_when_on_and_winter():
+def test_climate_hvac_mode_heat_cool_when_on():
     from custom_components.onna.climate import HVACMode
     zone = _make_zone({"1_0_1": True, "0_0_7": True})
-    assert zone.hvac_mode == HVACMode.HEAT
-
-
-def test_climate_hvac_mode_cool_when_on_and_summer():
-    from custom_components.onna.climate import HVACMode
-    zone = _make_zone({"1_0_1": True, "0_0_7": False})
-    assert zone.hvac_mode == HVACMode.COOL
+    assert zone.hvac_mode == HVACMode.HEAT_COOL
 
 
 def test_climate_hvac_action_off_when_zone_off():
@@ -89,10 +85,26 @@ def test_climate_hvac_action_cooling_when_demand_and_summer():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.anyio
-async def test_set_temperature_writes_to_setpoint_address():
-    zone = _make_zone({"1_0_1": True})  # zone on → pure setpoint write
-    await zone.async_set_temperature(temperature=23.5)
+async def test_set_temperature_low_writes_active_setpoint_in_winter():
+    zone = _make_zone({"1_0_1": True, "0_0_7": True})  # winter → low is active
+    await zone.async_set_temperature(target_temp_low=23.5, target_temp_high=27.0)
     zone._coordinator.client.async_set_address_value.assert_called_once_with("1_0_2", 23.5)
+
+
+@pytest.mark.anyio
+async def test_set_temperature_high_writes_active_setpoint_in_summer():
+    zone = _make_zone({"1_0_1": True, "0_0_7": False})  # summer → high is active
+    await zone.async_set_temperature(target_temp_low=20.0, target_temp_high=26.5)
+    zone._coordinator.client.async_set_address_value.assert_called_once_with("1_0_2", 26.5)
+
+
+@pytest.mark.anyio
+async def test_set_temperature_stores_both_sliders():
+    zone = _make_zone({"1_0_1": True, "0_0_7": True})
+    zone.async_write_ha_state = MagicMock()
+    await zone.async_set_temperature(target_temp_low=21.0, target_temp_high=25.0)
+    assert zone.target_temperature_low == 21.0
+    assert zone.target_temperature_high == 25.0
 
 
 @pytest.mark.anyio
@@ -104,18 +116,10 @@ async def test_set_hvac_mode_off_writes_zero_to_onoff():
 
 
 @pytest.mark.anyio
-async def test_set_hvac_mode_heat_turns_zone_on():
+async def test_set_hvac_mode_heat_cool_turns_zone_on():
     from custom_components.onna.climate import HVACMode
     zone = _make_zone()
-    await zone.async_set_hvac_mode(HVACMode.HEAT)
-    zone._coordinator.client.async_set_address_value.assert_called_once_with("1_0_0", 1)
-
-
-@pytest.mark.anyio
-async def test_set_hvac_mode_cool_turns_zone_on():
-    from custom_components.onna.climate import HVACMode
-    zone = _make_zone()
-    await zone.async_set_hvac_mode(HVACMode.COOL)
+    await zone.async_set_hvac_mode(HVACMode.HEAT_COOL)
     zone._coordinator.client.async_set_address_value.assert_called_once_with("1_0_0", 1)
 
 
@@ -132,19 +136,19 @@ def test_handle_temp_updates_state():
 
 
 def test_handle_setpoint_updates_state():
-    zone = _make_zone()
+    zone = _make_zone()  # winter default → active maps to low
     zone.async_write_ha_state = MagicMock()
     zone._handle_setpoint(24.0)
-    assert zone.target_temperature == 24.0
+    assert zone.target_temperature_low == 24.0
     zone.async_write_ha_state.assert_called_once()
 
 
-def test_handle_onoff_switches_mode_to_heat():
+def test_handle_onoff_switches_mode_to_heat_cool():
     from custom_components.onna.climate import HVACMode
     zone = _make_zone({"1_0_1": False, "0_0_7": True})
     zone.async_write_ha_state = MagicMock()
     zone._handle_onoff(True)
-    assert zone.hvac_mode == HVACMode.HEAT
+    assert zone.hvac_mode == HVACMode.HEAT_COOL
     zone.async_write_ha_state.assert_called_once()
 
 
@@ -160,10 +164,26 @@ def test_handle_demand_updates_action():
 def test_handle_winter_switches_action():
     from custom_components.onna.climate import HVACAction
     zone = _make_zone({"1_0_1": True, "1_0_7": True, "0_0_7": True})
+    zone.hass = MagicMock()
     zone.async_write_ha_state = MagicMock()
     zone._handle_winter(False)
     assert zone.hvac_action == HVACAction.COOLING
     zone.async_write_ha_state.assert_called_once()
+
+
+def test_handle_winter_swaps_active_and_inactive_targets():
+    # winter → summer flip swaps which stored value is active.
+    zone = _make_zone({"1_0_1": True, "0_0_7": True})
+    zone._target_temp = 21.0        # winter/low active
+    zone._inactive_target = 25.0    # summer/high parked
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._handle_winter(False)      # now summer
+    assert zone._target_temp == 25.0
+    assert zone._inactive_target == 21.0
+    assert zone.target_temperature_high == 25.0
+    assert zone.target_temperature_low == 21.0
+    zone.hass.async_create_task.assert_called_once()  # re-push active setpoint
 
 
 # ---------------------------------------------------------------------------
@@ -301,21 +321,20 @@ def test_compute_onna_setpoint_clamped_to_min():
 
 @pytest.mark.anyio
 async def test_set_temperature_writes_compensated_setpoint():
-    """When external sensor is active, set_temperature sends compensated value to Onna."""
-    zone = _make_zone_with_override({"1_0_4": 25.4, "1_0_1": True})
+    """External sensor active → set_temperature writes the compensated active value."""
+    zone = _make_zone_with_override({"1_0_4": 25.4, "1_0_1": True, "0_0_7": True})
     zone._onna_temp = 25.4
     zone._ext_temp = 27.4
     zone._ext_available = True
-    zone._target_temp = 25.0
-    await zone.async_set_temperature(temperature=25.5)
-    assert zone._target_temp == 25.5
+    await zone.async_set_temperature(target_temp_low=25.5, target_temp_high=30.0)
+    assert zone.target_temperature_low == 25.5
     zone._coordinator.client.async_set_address_value.assert_called_once_with("1_0_2", 23.5)
 
 
 @pytest.mark.anyio
 async def test_set_temperature_without_override_writes_direct():
-    zone = _make_zone({"1_0_4": 20.0, "1_0_1": True})
-    await zone.async_set_temperature(temperature=22.0)
+    zone = _make_zone({"1_0_4": 20.0, "1_0_1": True, "0_0_7": True})
+    await zone.async_set_temperature(target_temp_low=22.0, target_temp_high=26.0)
     zone._coordinator.client.async_set_address_value.assert_called_once_with("1_0_2", 22.0)
 
 
@@ -459,12 +478,12 @@ async def test_restore_compensated_setpoint_on_added():
 @pytest.mark.anyio
 async def test_set_temperature_persists_user_intent_via_write_ha_state():
     """async_write_ha_state must be called so RestoreEntity survives HA restarts."""
-    zone = _make_zone_with_override({"1_0_4": 25.4})
+    zone = _make_zone_with_override({"1_0_4": 25.4, "0_0_7": True})
     zone._onna_temp = 25.4
     zone._ext_temp = 27.4
     zone._ext_available = True
     zone.async_write_ha_state = MagicMock()
-    await zone.async_set_temperature(temperature=25.5)
+    await zone.async_set_temperature(target_temp_low=25.5, target_temp_high=30.0)
     zone.async_write_ha_state.assert_called()
 
 
@@ -535,29 +554,33 @@ async def test_async_added_without_override_does_not_track_external():
 
 
 @pytest.mark.anyio
-async def test_restore_target_temperature_on_added():
-    zone = _make_zone()
+async def test_restore_target_temperatures_on_added():
+    zone = _make_zone({"0_0_7": True})  # winter
     zone.hass = MagicMock()
     zone.async_on_remove = MagicMock()
     last_state = MagicMock()
-    last_state.attributes = {"temperature": 23.5}
+    last_state.state = "heat_cool"
+    last_state.attributes = {"target_temp_low": 21.0, "target_temp_high": 25.0}
     zone.async_get_last_state = AsyncMock(return_value=last_state)
     with patch("custom_components.onna.climate.async_dispatcher_connect",
                return_value=lambda: None):
         await zone.async_added_to_hass()
-    assert zone.target_temperature == 23.5
+    assert zone.target_temperature_low == 21.0
+    assert zone.target_temperature_high == 25.0
 
 
 @pytest.mark.anyio
 async def test_restore_skipped_when_no_last_state():
-    zone = _make_zone()
+    zone = _make_zone({"1_0_3": 20.0})
     zone.hass = MagicMock()
     zone.async_on_remove = MagicMock()
     zone.async_get_last_state = AsyncMock(return_value=None)
     with patch("custom_components.onna.climate.async_dispatcher_connect",
                return_value=lambda: None):
         await zone.async_added_to_hass()
-    assert zone.target_temperature == 20.0  # default unchanged
+    # cold start: both sliders seeded from the active 1_0_3 value
+    assert zone.target_temperature_low == 20.0
+    assert zone.target_temperature_high == 20.0
 
 
 # ---------------------------------------------------------------------------
@@ -653,6 +676,117 @@ def test_general_handle_winter_updates_action():
     general._hvac_mode = HVACMode.COOL  # action only reported while not OFF
     general._handle_winter(False)
     assert general.hvac_action == HVACAction.COOLING
+
+
+# ---------------------------------------------------------------------------
+# Presets
+# ---------------------------------------------------------------------------
+from custom_components.onna.climate import (
+    PRESET_NONE, PRESET_AWAY, PRESET_ECO, PRESET_SLEEP, PRESET_COMFORT,
+)
+
+
+def test_preset_modes_expose_the_four_presets_plus_none():
+    zone = _make_zone()
+    assert zone.preset_modes == [
+        PRESET_NONE, PRESET_AWAY, PRESET_ECO, PRESET_SLEEP, PRESET_COMFORT
+    ]
+
+
+def test_default_preset_mode_is_none():
+    zone = _make_zone()
+    assert zone.preset_mode == PRESET_NONE
+
+
+@pytest.mark.anyio
+async def test_set_preset_loads_pair_and_writes_active_in_winter():
+    zone = _make_zone({"1_0_1": True, "0_0_7": True})  # winter → heat value active
+    zone.async_write_ha_state = MagicMock()
+    await zone.async_set_preset_mode(PRESET_COMFORT)  # default (21.0, 24.0)
+    assert zone.preset_mode == PRESET_COMFORT
+    assert zone.target_temperature_low == 21.0
+    assert zone.target_temperature_high == 24.0
+    zone._coordinator.client.async_set_address_value.assert_called_once_with("1_0_2", 21.0)
+
+
+@pytest.mark.anyio
+async def test_set_preset_writes_cool_value_active_in_summer():
+    zone = _make_zone({"1_0_1": True, "0_0_7": False})  # summer → cool value active
+    zone.async_write_ha_state = MagicMock()
+    await zone.async_set_preset_mode(PRESET_AWAY)  # default (16.0, 30.0)
+    assert zone.target_temperature_high == 30.0
+    zone._coordinator.client.async_set_address_value.assert_called_once_with("1_0_2", 30.0)
+
+
+@pytest.mark.anyio
+async def test_set_preset_none_does_not_write():
+    zone = _make_zone({"1_0_1": True, "0_0_7": True})
+    zone.async_write_ha_state = MagicMock()
+    await zone.async_set_preset_mode(PRESET_NONE)
+    assert zone.preset_mode == PRESET_NONE
+    zone._coordinator.client.async_set_address_value.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_set_temperature_drops_to_manual():
+    zone = _make_zone({"1_0_1": True, "0_0_7": True})
+    zone.async_write_ha_state = MagicMock()
+    await zone.async_set_preset_mode(PRESET_COMFORT)
+    await zone.async_set_temperature(target_temp_low=22.0, target_temp_high=24.0)
+    assert zone.preset_mode == PRESET_NONE
+
+
+def test_external_setpoint_change_switches_to_manual():
+    zone = _make_zone({"1_0_1": True, "0_0_7": True})
+    zone.async_write_ha_state = MagicMock()
+    zone._preset_mode = PRESET_COMFORT
+    zone._target_temp = 21.0
+    zone._handle_setpoint(23.0)  # general/app/wheel changed it
+    assert zone._target_temp == 23.0
+    assert zone.preset_mode == PRESET_NONE
+
+
+def test_own_write_echo_keeps_preset():
+    zone = _make_zone({"1_0_1": True, "0_0_7": True})
+    zone.async_write_ha_state = MagicMock()
+    zone._preset_mode = PRESET_COMFORT
+    zone._target_temp = 21.0
+    zone._handle_setpoint(21.0)  # Onna echoes our own preset write
+    assert zone.preset_mode == PRESET_COMFORT
+    assert zone._target_temp == 21.0
+
+
+@pytest.mark.anyio
+async def test_custom_preset_temps_used():
+    coord = _make_coordinator({"1_0_1": True, "0_0_7": True})
+    zone = OnnaClimate(
+        coord, "Salón+Cocina",
+        "1_0_4", "1_0_3", "1_0_2",
+        "1_0_1", "1_0_0", "1_0_7",
+        preset_temps={"away": (15.0, 29.0), "eco": (18.0, 27.0),
+                      "sleep": (19.0, 26.0), "comfort": (21.0, 24.0)},
+    )
+    zone.async_write_ha_state = MagicMock()
+    # winter → low slider takes the custom heat value
+    await zone.async_set_preset_mode(PRESET_AWAY)
+    assert zone.target_temperature_low == 15.0
+
+
+@pytest.mark.anyio
+async def test_restore_preset_mode_on_added():
+    zone = _make_zone({"0_0_7": True})
+    zone.hass = MagicMock()
+    zone.async_on_remove = MagicMock()
+    last_state = MagicMock()
+    last_state.state = "heat_cool"
+    last_state.attributes = {
+        "target_temp_low": 21.0, "target_temp_high": 24.0, "preset_mode": PRESET_COMFORT,
+    }
+    zone.async_get_last_state = AsyncMock(return_value=last_state)
+    with patch("custom_components.onna.climate.async_dispatcher_connect",
+               return_value=lambda: None):
+        await zone.async_added_to_hass()
+    assert zone.preset_mode == PRESET_COMFORT
 
 
 # ---------------------------------------------------------------------------
@@ -1003,72 +1137,59 @@ async def test_setup_entry_defaults_tuning_options():
     assert zone._window_open_delay == 600
 
 
+@pytest.mark.anyio
+async def test_setup_entry_passes_preset_temps_to_zones():
+    from custom_components.onna.climate import async_setup_entry
+    from custom_components.onna.const import DOMAIN
+
+    coord = _make_coordinator()
+    coord.device_config = {
+        "climate_addresses": {
+            "zone_0": ["Salón+Cocina", "1_0_4", "1_0_3", "1_0_2", "1_0_1", "1_0_0", "1_0_7"],
+        }
+    }
+    hass = MagicMock()
+    hass.data = {DOMAIN: {"eid": coord}}
+    entry = MagicMock()
+    entry.entry_id = "eid"
+    entry.options = {"preset_temps": {"comfort": [20.0, 23.0]}}
+    added = []
+    await async_setup_entry(hass, entry, lambda ents: added.extend(ents))
+
+    zone = added[0]
+    # overridden preset applied…
+    assert zone._preset_temps["comfort"] == (20.0, 23.0)
+    # …and untouched presets fall back to defaults
+    assert zone._preset_temps["away"] == (16.0, 30.0)
+
+
+@pytest.mark.anyio
+async def test_setup_entry_defaults_preset_temps():
+    from custom_components.onna.climate import async_setup_entry
+    from custom_components.onna.const import DOMAIN
+
+    coord = _make_coordinator()
+    coord.device_config = {
+        "climate_addresses": {
+            "zone_0": ["Salón+Cocina", "1_0_4", "1_0_3", "1_0_2", "1_0_1", "1_0_0", "1_0_7"],
+        }
+    }
+    hass = MagicMock()
+    hass.data = {DOMAIN: {"eid": coord}}
+    entry = MagicMock()
+    entry.entry_id = "eid"
+    entry.options = {}
+    added = []
+    await async_setup_entry(hass, entry, lambda ents: added.extend(ents))
+
+    zone = added[0]
+    assert zone._preset_temps["comfort"] == (21.0, 24.0)
+
+
 # ---------------------------------------------------------------------------
 # Setpoint 7.0 °C ⇄ OFF equivalence
 # (spec: docs/superpowers/specs/2026-07-07-setpoint-min-off-design.md)
 # ---------------------------------------------------------------------------
-
-@pytest.mark.anyio
-async def test_set_temperature_min_turns_zone_off():
-    """Setting min_temp (7.0) while on → off write, no setpoint write, target kept."""
-    zone = _make_zone({"1_0_1": True})
-    zone._target_temp = 22.0
-    await zone.async_set_temperature(temperature=7.0)
-    zone._coordinator.client.async_set_address_value.assert_called_once_with("1_0_0", 0)
-    assert zone._target_temp == 22.0
-
-
-@pytest.mark.anyio
-async def test_set_temperature_min_while_off_writes_off_again():
-    """Setting 7.0 while already off → idempotent off write, target kept."""
-    zone = _make_zone({"1_0_1": False})
-    zone._target_temp = 21.0
-    await zone.async_set_temperature(temperature=7.0)
-    zone._coordinator.client.async_set_address_value.assert_called_once_with("1_0_0", 0)
-    assert zone._target_temp == 21.0
-
-
-@pytest.mark.anyio
-async def test_set_temperature_min_clears_window_pause():
-    """7.0 goes through async_turn_off → user override clears the pause flag."""
-    zone = _make_zone_with_window({"1_2_1": True})
-    zone._window_pause_active = True
-    await zone.async_set_temperature(temperature=7.0)
-    assert zone._window_pause_active is False
-
-
-@pytest.mark.anyio
-async def test_set_temperature_above_min_while_off_turns_zone_on():
-    """Setting >7.0 while off → setpoint write followed by on write."""
-    from unittest.mock import call
-    zone = _make_zone({"1_0_1": False})
-    zone.async_write_ha_state = MagicMock()
-    await zone.async_set_temperature(temperature=22.0)
-    zone._coordinator.client.async_set_address_value.assert_has_calls([
-        call("1_0_2", 22.0),
-        call("1_0_0", 1),
-    ])
-    assert zone._target_temp == 22.0
-
-
-@pytest.mark.anyio
-async def test_set_temperature_above_min_while_off_clears_window_pause():
-    """>7.0 while off goes through async_turn_on → pause flag cleared (user wins)."""
-    zone = _make_zone_with_window({"1_2_1": False})
-    zone._window_pause_active = True
-    zone.async_write_ha_state = MagicMock()
-    await zone.async_set_temperature(temperature=22.0)
-    assert zone._window_pause_active is False
-
-
-@pytest.mark.anyio
-async def test_set_temperature_above_min_while_on_no_onoff_write():
-    """Regression: setting >7.0 while on stays a pure setpoint write."""
-    zone = _make_zone({"1_0_1": True})
-    zone.async_write_ha_state = MagicMock()
-    await zone.async_set_temperature(temperature=22.0)
-    zone._coordinator.client.async_set_address_value.assert_called_once_with("1_0_2", 22.0)
-
 
 @pytest.mark.anyio
 async def test_general_set_temperature_min_broadcasts_off():
