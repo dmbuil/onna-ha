@@ -238,26 +238,41 @@ room settles closer to target.
 
 **Formulas.** On each *demand-off → coast* cycle a sample is measured, blended
 into the per-season learned value, and subtracted from (or, in summer, added to)
-the written setpoint:
+the written setpoint.
 
-```text
-# 1. Sample the coast over the window (default 90 min), clamped to [0, 3] °C
-sample = peak(ext_temp)   − start      # heating  (room overshoots upward)
-sample = start − trough(ext_temp)      # cooling  (room undershoots downward)
+1. **Sample** the coast over the window (default 90 min), clamped to $[0, 3]\,^\circ\text{C}$:
 
-# 2. Blend into the learned value (EMA, α = 0.3) — per zone, per season
-learned = 0.3 × sample + 0.7 × learned
-
-# 3. Damp the written setpoint (only when learned ≥ 0.2 °C, capped at 2 °C)
-damping       = min(learned, 2.0)
-onna_setpoint = compensated_setpoint − damping     # heating
-onna_setpoint = compensated_setpoint + damping     # cooling
+```math
+\text{sample} =
+\begin{cases}
+  \mathrm{peak}(T_\text{ext}) - T_\text{start} & \text{(heating)} \\
+  T_\text{start} - \mathrm{trough}(T_\text{ext}) & \text{(cooling)}
+\end{cases}
 ```
 
-Where `start` is the room temperature at demand-off, `peak` / `trough` the
-extreme reached during the coast window, and `compensated_setpoint` the target
-after external-sensor offset compensation. The final `onna_setpoint` is clamped
-to the 7–35 °C range before it is written to the bus.
+2. **Blend** into the learned value — per zone, per season — with an EMA ($\alpha = 0.3$):
+
+```math
+\text{learned} \leftarrow 0.3\,\text{sample} + 0.7\,\text{learned}
+```
+
+3. **Damp** the written setpoint, only when $\text{learned} \ge 0.2\,^\circ\text{C}$ and capped at $2\,^\circ\text{C}$:
+
+```math
+d = \min(\text{learned},\ 2.0)
+\qquad
+\text{setpoint}_\text{onna} =
+\begin{cases}
+  \text{setpoint}_\text{comp} - d & \text{(heating)} \\
+  \text{setpoint}_\text{comp} + d & \text{(cooling)}
+\end{cases}
+```
+
+Where $T_\text{start}$ is the room temperature at demand-off, $\mathrm{peak}$ /
+$\mathrm{trough}$ the extreme reached during the coast window, and
+$\text{setpoint}_\text{comp}$ the target after external-sensor offset
+compensation. The final $\text{setpoint}_\text{onna}$ is clamped to the
+7–35 °C range before it is written to the bus.
 
 ### Seasonal gating
 
