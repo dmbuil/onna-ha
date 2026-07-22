@@ -15,6 +15,9 @@ def _make_coordinator(data=None):
     coord.data = data or {}
     coord.client._onna_id = "TESTID"
     coord.client.async_set_address_value = AsyncMock()
+    # A real coordinator defaults the seasonal gate off; the bare MagicMock would
+    # otherwise return a truthy auto-attribute and seed zones as paused.
+    coord.seasonal_gate_active = False
     return coord
 
 
@@ -133,6 +136,47 @@ def test_external_sensor_unavailable_aborts_sample():
     event.data = {"new_state": ns}
     zone._handle_external_temp(event)
     assert zone._overshoot.sampling is False
+
+
+def test_extra_attrs_expose_learned_overshoot():
+    zone = _make_zone_ext({"0_0_7": True}, learned_heat=0.4, learned_cool=0.6)
+    attrs = zone.extra_state_attributes
+    assert attrs["_onna_overshoot_heat"] == 0.4
+    assert attrs["_onna_overshoot_cool"] == 0.6
+
+
+def test_no_overshoot_attrs_without_learner():
+    zone = _make_zone({"1_0_1": True})
+    attrs = zone.extra_state_attributes or {}
+    assert "_onna_overshoot_heat" not in attrs
+
+
+@pytest.mark.anyio
+async def test_restore_learned_overshoot(monkeypatch):
+    zone = _make_zone_ext({"0_0_7": True})
+    zone.hass = MagicMock()
+
+    last_state = MagicMock()
+    last_state.state = "heat_cool"
+    last_state.attributes = {
+        "target_temp_low": 21.0,
+        "target_temp_high": 25.0,
+        "_onna_overshoot_heat": 0.7,
+        "_onna_overshoot_cool": 0.3,
+    }
+
+    async def _fake_last_state():
+        return last_state
+    zone.async_get_last_state = _fake_last_state
+    zone.async_on_remove = MagicMock()
+    monkeypatch.setattr(
+        "custom_components.onna.climate.async_dispatcher_connect",
+        MagicMock(return_value=MagicMock()),
+    )
+    zone.hass.states.get = MagicMock(return_value=None)
+    await zone.async_added_to_hass()
+    assert zone._overshoot.learned_heat == 0.7
+    assert zone._overshoot.learned_cool == 0.3
 
 
 

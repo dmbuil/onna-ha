@@ -509,6 +509,13 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             preset = last_state.attributes.get("preset_mode")
             if preset in self._attr_preset_modes:
                 self._preset_mode = preset
+            if self._overshoot is not None:
+                heat = last_state.attributes.get("_onna_overshoot_heat")
+                cool = last_state.attributes.get("_onna_overshoot_cool")
+                if heat is not None or cool is not None:
+                    self._overshoot = OvershootLearner.from_dict(
+                        {"heat": heat or 0.0, "cool": cool or 0.0}
+                    )
             if self._external_temp:
                 # Restore the last compensated value so _handle_setpoint can
                 # detect and discard the stale echo Onna sends on reconnect.
@@ -618,6 +625,13 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         if self._window_sensor:
             attrs["window_open"] = self._window_open
             attrs["window_pause_active"] = self._window_pause_active
+        if self._overshoot is not None and (
+            self._overshoot.learned_heat or self._overshoot.learned_cool
+        ):
+            attrs["_onna_overshoot_heat"] = self._overshoot.learned_heat
+            attrs["_onna_overshoot_cool"] = self._overshoot.learned_cool
+        if self._seasonal_pause_active:
+            attrs["seasonal_pause_active"] = True
         return attrs or None
 
     @callback
