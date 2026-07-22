@@ -72,6 +72,69 @@ def test_no_damping_below_threshold():
     assert zone._compute_onna_setpoint() == 22.0
 
 
+def test_demand_falling_edge_starts_sample():
+    from unittest.mock import patch
+    zone = _make_zone_ext({"1_0_1": True, "1_0_7": True, "0_0_7": True})
+    zone._is_on = True
+    zone._demand = True
+    zone._ext_temp = 21.0
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    with patch("custom_components.onna.climate.async_call_later", return_value=MagicMock()):
+        zone._handle_demand(False)  # falling edge
+    assert zone._overshoot.sampling is True
+
+
+def test_demand_rising_edge_closes_sample_early():
+    zone = _make_zone_ext({"1_0_1": True, "0_0_7": True})
+    zone._is_on = True
+    zone._demand = False
+    zone._ext_temp = 21.0
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._overshoot.start_sample(21.0, is_winter=True)
+    zone._overshoot.observe(21.6)
+    zone._coast_cancel_timer = MagicMock()
+    zone._handle_demand(True)  # rising edge closes the sample
+    assert zone._overshoot.sampling is False
+    assert zone._overshoot.learned_heat > 0.0
+
+
+def test_external_temp_update_feeds_observe():
+    zone = _make_zone_ext({"0_0_7": True})
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._overshoot.start_sample(21.0, is_winter=True)
+    event = MagicMock()
+    ns = MagicMock(); ns.state = "21.9"
+    event.data = {"new_state": ns}
+    zone._handle_external_temp(event)
+    zone._overshoot.close_sample()
+    assert zone._overshoot.learned_heat > 0.0  # 21.9 peak captured
+
+
+@pytest.mark.anyio
+async def test_turn_off_aborts_in_flight_sample():
+    zone = _make_zone_ext({"0_0_7": True})
+    zone._overshoot.start_sample(21.0, is_winter=True)
+    zone._coast_cancel_timer = MagicMock()
+    await zone.async_turn_off()
+    assert zone._overshoot.sampling is False
+
+
+def test_external_sensor_unavailable_aborts_sample():
+    zone = _make_zone_ext({"0_0_7": True})
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._overshoot.start_sample(21.0, is_winter=True)
+    zone._coast_cancel_timer = MagicMock()
+    event = MagicMock()
+    ns = MagicMock(); ns.state = "unavailable"
+    event.data = {"new_state": ns}
+    zone._handle_external_temp(event)
+    assert zone._overshoot.sampling is False
+
+
 
 # ---------------------------------------------------------------------------
 # OnnaClimate — initial state

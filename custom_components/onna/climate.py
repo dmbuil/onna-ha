@@ -418,6 +418,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         # and must not overwrite this stored user intent).
         # A manual slider change always drops the zone to Manual (none).
         self._preset_mode = PRESET_NONE
+        self._abort_overshoot_sample()
         self.async_write_ha_state()
         # Clear last_written_setpoint so the next _push call always writes,
         # even if the compensated value happens to equal the previous write.
@@ -431,6 +432,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         nothing (the zone keeps following the general broadcast / Onna app).
         """
         self._preset_mode = preset_mode
+        self._abort_overshoot_sample()
         if preset_mode != PRESET_NONE:
             heat, cool = self._preset_temps[preset_mode]
             if self._winter:
@@ -449,6 +451,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         will NOT auto-resume (the user took explicit control of this zone).
         """
         self._window_pause_active = False
+        self._abort_overshoot_sample()
         await self._coordinator.client.async_set_address_value(self._onoff_w, 1)
 
     async def async_turn_off(self) -> None:
@@ -458,6 +461,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         will NOT turn the zone back on (the user explicitly turned it off).
         """
         self._window_pause_active = False
+        self._abort_overshoot_sample()
         await self._coordinator.client.async_set_address_value(self._onoff_w, 0)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
@@ -648,6 +652,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             # (3) genuine external change
             self._target_temp = value
             self._preset_mode = PRESET_NONE
+            self._abort_overshoot_sample()
             if self._external_temp and self._ext_available:
                 self._last_written_setpoint = None
         self.async_write_ha_state()
@@ -657,9 +662,39 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         self._is_on = bool(value)
         self.async_write_ha_state()
 
+    def _abort_overshoot_sample(self) -> None:
+        """Cancel the coast timer and drop any in-flight overshoot sample."""
+        if self._coast_cancel_timer is not None:
+            self._coast_cancel_timer()
+            self._coast_cancel_timer = None
+        if self._overshoot is not None:
+            self._overshoot.invalidate()
+
+    @callback
+    def _coast_elapsed(self, _now: Any) -> None:
+        """Coast window elapsed → finalise the sample and persist the learning."""
+        self._coast_cancel_timer = None
+        if self._overshoot is not None and self._overshoot.sampling:
+            self._overshoot.close_sample()
+            self.async_write_ha_state()
+
     @callback
     def _handle_demand(self, value: Any) -> None:
-        self._demand = bool(value)
+        new_demand = bool(value)
+        if self._overshoot is not None and self._ext_available:
+            falling = self._demand and not new_demand
+            rising = not self._demand and new_demand
+            if falling and self._is_on and self._ext_temp is not None:
+                self._overshoot.start_sample(self._ext_temp, self._winter)
+                self._coast_cancel_timer = async_call_later(
+                    self.hass, self._coast_window_s, self._coast_elapsed
+                )
+            elif rising and self._overshoot.sampling:
+                if self._coast_cancel_timer is not None:
+                    self._coast_cancel_timer()
+                    self._coast_cancel_timer = None
+                self._overshoot.close_sample()
+        self._demand = new_demand
         self.async_write_ha_state()
 
     @callback
@@ -669,6 +704,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             # Season flipped: the active/inactive setpoints swap roles, and the
             # newly-active value must be (re)written to the KNX bus.
             self._winter = new_winter
+            self._abort_overshoot_sample()
             self._target_temp, self._inactive_target = (
                 self._inactive_target,
                 self._target_temp,
@@ -688,10 +724,14 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             try:
                 self._ext_temp = float(new_state.state)
                 self._ext_available = True
+                if self._overshoot is not None and self._overshoot.sampling:
+                    self._overshoot.observe(self._ext_temp)
             except ValueError:
                 self._ext_available = False
+                self._abort_overshoot_sample()
         else:
             self._ext_available = False
+            self._abort_overshoot_sample()
         self.async_write_ha_state()
         # External temp shifted → offset changed → re-push compensated setpoint.
         if self._ext_available and self._target_temp is not None:
