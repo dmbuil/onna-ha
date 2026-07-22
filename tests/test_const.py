@@ -42,3 +42,15 @@ def test_default_preset_temps_expected_values():
     assert DEFAULT_PRESET_TEMPS["eco"] == (18.0, 27.0)
     assert DEFAULT_PRESET_TEMPS["sleep"] == (19.0, 26.0)
     assert DEFAULT_PRESET_TEMPS["comfort"] == (21.0, 24.0)
+
+
+def test_smart_feature_defaults_present():
+    from custom_components.onna import const
+    assert const.DEFAULT_COAST_WINDOW_MIN == 90
+    assert const.DEFAULT_HEAT_OFF_ABOVE == 20.0
+    assert const.DEFAULT_COOL_OFF_BELOW == 16.0
+    assert const.SEASONAL_HYSTERESIS == 0.5
+    assert const.OPT_OUTDOOR_SOURCE == "outdoor_source"
+    assert const.OPT_HEAT_OFF_ABOVE == "heat_off_above"
+    assert const.OPT_COOL_OFF_BELOW == "cool_off_below"
+    assert const.OPT_COAST_WINDOW_MIN == "coast_window_min"
