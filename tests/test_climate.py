@@ -268,6 +268,17 @@ async def test_general_restores_ema_into_coordinator(monkeypatch):
     coord.seed_outdoor_ema.assert_called_once_with(17.0, 99.0)
 
 
+def test_coast_window_seconds_from_constructor():
+    coord = _make_coordinator()
+    zone = OnnaClimate(
+        coord, "Salón+Cocina",
+        "1_0_4", "1_0_3", "1_0_2", "1_0_1", "1_0_0", "1_0_7",
+        external_temp_entity_id="sensor.ext",
+        coast_window_min=30,
+    )
+    assert zone._coast_window_s == 30 * 60
+
+
 
 # ---------------------------------------------------------------------------
 # OnnaClimate — initial state

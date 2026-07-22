@@ -142,6 +142,9 @@ async def async_setup_entry(
     window_sensors = entry.options.get("climate_window_sensor", {})
     hysteresis = float(entry.options.get("setpoint_hysteresis", DEFAULT_SETPOINT_HYSTERESIS))
     window_delay = int(entry.options.get("window_open_delay", DEFAULT_WINDOW_OPEN_DELAY))
+    coast_window_min = int(
+        entry.options.get(OPT_COAST_WINDOW_MIN, DEFAULT_COAST_WINDOW_MIN)
+    )
     # Merge configured preset pairs over the defaults so a partial option
     # (e.g. only "comfort" customised) still yields a complete set.
     raw_presets = entry.options.get("preset_temps", {})
@@ -167,6 +170,7 @@ async def async_setup_entry(
             setpoint_hysteresis=hysteresis,
             window_open_delay=window_delay,
             preset_temps=preset_temps,
+            coast_window_min=coast_window_min,
         ))
 
     coordinator.register_address(_WINTER_ADDR)
