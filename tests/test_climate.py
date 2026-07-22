@@ -27,6 +27,51 @@ def _make_zone(data=None):
     )
 
 
+def _make_zone_ext(data=None, learned_heat=0.0, learned_cool=0.0):
+    """Zone with an external sensor configured and a primed overshoot learner."""
+    coord = _make_coordinator(data)
+    zone = OnnaClimate(
+        coord, "Salón+Cocina",
+        "1_0_4", "1_0_3", "1_0_2",
+        "1_0_1", "1_0_0", "1_0_7",
+        external_temp_entity_id="sensor.ext",
+    )
+    zone._ext_available = True
+    from custom_components.onna.overshoot import OvershootLearner
+    zone._overshoot = OvershootLearner(learned_heat=learned_heat, learned_cool=learned_cool)
+    return zone
+
+
+def test_overshoot_learner_none_without_external_sensor():
+    zone = _make_zone()
+    assert zone._overshoot is None
+
+
+def test_damping_subtracts_in_winter():
+    # winter, external offset zero (ext == onna), learned_heat 0.5 → setpoint - 0.5
+    zone = _make_zone_ext({"0_0_7": True}, learned_heat=0.5)
+    zone._target_temp = 22.0
+    zone._ext_temp = 20.0
+    zone._onna_temp = 20.0  # offset 0
+    assert zone._compute_onna_setpoint() == 21.5
+
+
+def test_damping_adds_in_summer():
+    zone = _make_zone_ext({"0_0_7": False}, learned_cool=0.5)
+    zone._target_temp = 24.0
+    zone._ext_temp = 20.0
+    zone._onna_temp = 20.0
+    assert zone._compute_onna_setpoint() == 24.5
+
+
+def test_no_damping_below_threshold():
+    zone = _make_zone_ext({"0_0_7": True}, learned_heat=0.1)  # < APPLY_THRESHOLD
+    zone._target_temp = 22.0
+    zone._ext_temp = 20.0
+    zone._onna_temp = 20.0
+    assert zone._compute_onna_setpoint() == 22.0
+
+
 
 # ---------------------------------------------------------------------------
 # OnnaClimate — initial state

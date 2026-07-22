@@ -105,10 +105,17 @@ from .const import (
     DEFAULT_PRESET_TEMPS,
     DEFAULT_SETPOINT_HYSTERESIS,
     DEFAULT_WINDOW_OPEN_DELAY,
+    DEFAULT_COAST_WINDOW_MIN,
+    OPT_COAST_WINDOW_MIN,
     DOMAIN,
 )
-from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
+from .coordinator import (
+    OnnaCoordinator,
+    SIGNAL_ADDRESS_UPDATE,
+    SIGNAL_SEASONAL_GATE,
+)
 from .entity import OnnaEntity
+from .overshoot import OvershootLearner
 
 # KNX address for the installation-wide heating/cooling mode (DPT 1.001: 1=winter, 0=summer).
 # All five zones share this single address; individual zones can only turn ON/OFF.
@@ -220,6 +227,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         setpoint_hysteresis: float = DEFAULT_SETPOINT_HYSTERESIS,
         window_open_delay: int = DEFAULT_WINDOW_OPEN_DELAY,
         preset_temps: dict[str, tuple[float, float]] | None = None,
+        coast_window_min: int = DEFAULT_COAST_WINDOW_MIN,
     ) -> None:
         self._coordinator    = coordinator
         self._attr_name      = name
@@ -271,6 +279,22 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         # that after an HA restart we can recognise the stale Onna echo and not overwrite the
         # restored user setpoint with the compensated value.
         self._last_written_setpoint: float | None = None
+
+        # Overshoot damping only applies where we can measure the real room via
+        # an external sensor; the Onna probe cannot see the coast.  No external
+        # sensor → no learner → no damping.
+        self._overshoot: OvershootLearner | None = (
+            OvershootLearner() if external_temp_entity_id else None
+        )
+        self._coast_window_s = int(coast_window_min) * 60
+        # Cancellation handle for the coast-window timer; None when idle.
+        self._coast_cancel_timer: Any = None
+        # Installation-wide seasonal gate, mirrored locally like the window pause.
+        # Seeded from the coordinator so a zone created while the gate is already
+        # open starts paused.
+        self._seasonal_pause_active: bool = bool(
+            getattr(coordinator, "seasonal_gate_active", False)
+        )
 
     @property
     def current_temperature(self) -> float | None:
@@ -340,6 +364,9 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         ):
             offset = self._ext_temp - self._onna_temp
             compensated = self._target_temp - offset
+            if self._overshoot is not None:
+                damp = self._overshoot.damping(self._winter)
+                compensated = compensated - damp if self._winter else compensated + damp
             return max(self._attr_min_temp, min(self._attr_max_temp, round(compensated, 1)))
         return self._target_temp
 
