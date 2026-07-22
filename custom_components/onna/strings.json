@@ -52,7 +52,8 @@
         "menu_options": {
           "zone_picker": "Zone sensors (external temperature / window)",
           "general": "General settings (hysteresis, window delay)",
-          "presets": "Presets (Away / Eco / Sleep / Comfort temperatures)"
+          "presets": "Presets (Away / Eco / Sleep / Comfort temperatures)",
+          "smart": "Smart features (seasonal gating, overshoot damping)"
         }
       },
       "presets": {
@@ -79,6 +80,16 @@
         "data_description": {
           "setpoint_hysteresis": "Minimum change in the compensated setpoint before a new value is written to the KNX bus. Lower values track the external sensor more closely but generate more bus traffic; higher values reduce traffic at the cost of precision. Set 0.0 to write every change. Default: 0.5 °C.",
           "window_open_delay": "How long a window must stay open before its zone thermostat is paused. Short ventilation bursts below this time are ignored. Default: 600 seconds (10 minutes)."
+        }
+      },
+      "smart": {
+        "title": "Onna — smart features",
+        "description": "Seasonal gating pauses zones when the outdoor climate makes the installation's heat/cool mode pointless. Overshoot damping learns each zone's slab inertia (requires an external sensor).",
+        "data": {
+          "outdoor_source": "Outdoor source (weather or temperature sensor)",
+          "heat_off_above": "Winter: pause when outdoor average is above (°C)",
+          "cool_off_below": "Summer: pause when outdoor average is below (°C)",
+          "coast_window_min": "Overshoot coast window (min)"
         }
       }
     },

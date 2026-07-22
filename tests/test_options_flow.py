@@ -229,3 +229,49 @@ async def test_options_presets_rejects_heat_gt_cool():
     assert result["type"] == "form"
     assert result["step_id"] == "presets"
     assert result["errors"] == {"base": "preset_heat_gt_cool"}
+
+
+@pytest.mark.anyio
+async def test_init_menu_includes_smart():
+    flow = _options_flow()
+    result = await flow.async_step_init(user_input=None)
+    assert "smart" in result["menu_options"]
+
+
+@pytest.mark.anyio
+async def test_smart_step_shows_form_with_defaults():
+    flow = _options_flow()
+    result = await flow.async_step_smart(user_input=None)
+    assert result["type"] == "form"
+    assert result["step_id"] == "smart"
+
+
+@pytest.mark.anyio
+async def test_smart_step_saves_options_and_preserves_others():
+    existing = {"preset_temps": {"comfort": [21.0, 24.0]}}
+    flow = _options_flow(current_options=existing)
+    result = await flow.async_step_smart(user_input={
+        "outdoor_source": "weather.home",
+        "heat_off_above": 21.0,
+        "cool_off_below": 15.0,
+        "coast_window_min": 60,
+    })
+    assert result["type"] == "create_entry"
+    data = result["data"]
+    assert data["outdoor_source"] == "weather.home"
+    assert data["heat_off_above"] == 21.0
+    assert data["cool_off_below"] == 15.0
+    assert data["coast_window_min"] == 60
+    assert data["preset_temps"]["comfort"] == [21.0, 24.0]
+
+
+@pytest.mark.anyio
+async def test_smart_step_empty_source_stored_as_none():
+    flow = _options_flow()
+    result = await flow.async_step_smart(user_input={
+        "outdoor_source": "",
+        "heat_off_above": 20.0,
+        "cool_off_below": 16.0,
+        "coast_window_min": 90,
+    })
+    assert result["data"]["outdoor_source"] is None
