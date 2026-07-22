@@ -451,6 +451,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         will NOT auto-resume (the user took explicit control of this zone).
         """
         self._window_pause_active = False
+        self._seasonal_pause_active = False
         self._abort_overshoot_sample()
         await self._coordinator.client.async_set_address_value(self._onoff_w, 1)
 
@@ -461,6 +462,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         will NOT turn the zone back on (the user explicitly turned it off).
         """
         self._window_pause_active = False
+        self._seasonal_pause_active = False
         self._abort_overshoot_sample()
         await self._coordinator.client.async_set_address_value(self._onoff_w, 0)
 
@@ -527,6 +529,10 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             restored_window_pause = bool(
                 last_state.attributes.get("window_pause_active")
             )
+            # The seasonal pause likewise survives restarts; a gate-clear after
+            # the restart must be able to resume the zone.
+            if bool(last_state.attributes.get("seasonal_pause_active")):
+                self._seasonal_pause_active = True
             # Onna only pushes 1_X_1 (on/off) and 1_X_7 (demand) telegrams on
             # *changes*, so after a reload these flags would sit stale (zone
             # stuck on IDLE) until the device next toggles them.  Restore the
@@ -554,6 +560,13 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
                     handler,
                 )
             )
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_SEASONAL_GATE,
+                self._handle_seasonal_gate,
+            )
+        )
         self._subscribe_connection_signal()
         if self._external_temp:
             # Seed the external temperature from the current HA state machine
@@ -692,6 +705,28 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             self._overshoot.close_sample()
             self.async_write_ha_state()
 
+    def _resume_if_no_pause(self) -> None:
+        """Turn the zone back on only when no pause (window or seasonal) holds it."""
+        if not self._window_pause_active and not self._seasonal_pause_active:
+            self.hass.async_create_task(
+                self._coordinator.client.async_set_address_value(self._onoff_w, 1)
+            )
+
+    @callback
+    def _handle_seasonal_gate(self, active: bool) -> None:
+        """React to the installation-wide seasonal gate opening/closing."""
+        if active:
+            if self._is_on and not self._seasonal_pause_active:
+                self._seasonal_pause_active = True
+                self.hass.async_create_task(
+                    self._coordinator.client.async_set_address_value(self._onoff_w, 0)
+                )
+        else:
+            if self._seasonal_pause_active:
+                self._seasonal_pause_active = False
+                self._resume_if_no_pause()
+        self.async_write_ha_state()
+
     @callback
     def _handle_demand(self, value: Any) -> None:
         new_demand = bool(value)
@@ -787,11 +822,10 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         else:
             self._cancel_window_timer()
             if self._window_pause_active:
-                # Resume the zone that was paused by this window opening.
+                # Resume the zone that was paused by this window opening — but
+                # only if a seasonal pause is not also holding it off.
                 self._window_pause_active = False
-                self.hass.async_create_task(
-                    self._coordinator.client.async_set_address_value(self._onoff_w, 1)
-                )
+                self._resume_if_no_pause()
                 self.async_write_ha_state()
 
     @callback

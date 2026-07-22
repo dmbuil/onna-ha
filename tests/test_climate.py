@@ -179,6 +179,55 @@ async def test_restore_learned_overshoot(monkeypatch):
     assert zone._overshoot.learned_cool == 0.3
 
 
+def test_seasonal_gate_open_pauses_running_zone():
+    zone = _make_zone({"1_0_1": True, "0_0_7": True})
+    zone._is_on = True
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._handle_seasonal_gate(True)
+    assert zone._seasonal_pause_active is True
+    zone.hass.async_create_task.assert_called_once()
+
+
+def test_seasonal_gate_clear_resumes_when_no_window_pause():
+    zone = _make_zone({"1_0_1": False, "0_0_7": True})
+    zone._is_on = False
+    zone._seasonal_pause_active = True
+    zone._window_pause_active = False
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._handle_seasonal_gate(False)
+    assert zone._seasonal_pause_active is False
+    zone.hass.async_create_task.assert_called_once()
+
+
+def test_seasonal_clear_does_not_resume_while_window_pause_active():
+    zone = _make_zone({"1_0_1": False, "0_0_7": True})
+    zone._is_on = False
+    zone._seasonal_pause_active = True
+    zone._window_pause_active = True   # window still holding the zone off
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._handle_seasonal_gate(False)
+    assert zone._seasonal_pause_active is False
+    zone.hass.async_create_task.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_user_turn_on_clears_seasonal_pause():
+    zone = _make_zone({"1_0_1": False})
+    zone._seasonal_pause_active = True
+    await zone.async_turn_on()
+    assert zone._seasonal_pause_active is False
+
+
+def test_extra_attrs_expose_seasonal_pause():
+    zone = _make_zone({"1_0_1": True})
+    zone._seasonal_pause_active = True
+    attrs = zone.extra_state_attributes
+    assert attrs["seasonal_pause_active"] is True
+
+
 
 # ---------------------------------------------------------------------------
 # OnnaClimate — initial state
@@ -348,7 +397,9 @@ def test_climate_unique_id_uses_onoff_state_addr():
 
 
 @pytest.mark.anyio
-async def test_async_added_connects_five_signals():
+async def test_async_added_connects_six_signals():
+    # Five per-address signals (temp, setpoint, on/off, demand, winter) plus the
+    # installation-wide seasonal-gate signal.
     zone = _make_zone()
     zone.hass = MagicMock()
     zone.async_on_remove = MagicMock()
@@ -357,7 +408,7 @@ async def test_async_added_connects_five_signals():
         return_value=lambda: None,
     ) as mock_connect:
         await zone.async_added_to_hass()
-    assert mock_connect.call_count == 5
+    assert mock_connect.call_count == 6
 
 
 
