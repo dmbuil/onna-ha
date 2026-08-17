@@ -75,17 +75,56 @@ def test_no_damping_below_threshold():
     assert zone._compute_onna_setpoint() == 22.0
 
 
-def test_demand_falling_edge_starts_sample():
-    from unittest.mock import patch
+def test_demand_falling_edge_defers_sample_until_settled():
+    # A falling demand edge must NOT start a sample immediately.  It arms the
+    # settle timer, filtering the PI loop's sub-minute demand chatter — sampling
+    # only begins once demand has stayed off through the settle window.
     zone = _make_zone_ext({"1_0_1": True, "1_0_7": True, "0_0_7": True})
     zone._is_on = True
     zone._demand = True
     zone._ext_temp = 21.0
     zone.hass = MagicMock()
     zone.async_write_ha_state = MagicMock()
-    with patch("custom_components.onna.climate.async_call_later", return_value=MagicMock()):
+    with patch(
+        "custom_components.onna.climate.async_call_later", return_value=MagicMock()
+    ) as call_later:
         zone._handle_demand(False)  # falling edge
+    assert zone._overshoot.sampling is False       # not sampling yet
+    assert zone._coast_settle_timer is not None    # settle timer armed
+    assert zone._pending_start_temp == 21.0        # start temp captured now
+    call_later.assert_called_once()
+
+
+def test_settle_elapsed_starts_sample():
+    # When demand has stayed off through the settle window, the coast sample
+    # begins from the temperature captured at demand-off.
+    zone = _make_zone_ext({"0_0_7": True})
+    zone._is_on = True
+    zone._winter = True
+    zone._ext_temp = 21.2
+    zone._pending_start_temp = 21.0
+    zone.hass = MagicMock()
+    with patch("custom_components.onna.climate.async_call_later", return_value=MagicMock()):
+        zone._coast_settle_elapsed(None)
     assert zone._overshoot.sampling is True
+    assert zone._coast_cancel_timer is not None    # coast window now running
+
+
+def test_demand_chatter_cancels_pending_settle():
+    # Demand re-firing before the settle window elapses is chatter: the pending
+    # settle is cancelled and no sample starts.
+    zone = _make_zone_ext({"0_0_7": True})
+    zone._is_on = True
+    zone._demand = False
+    zone._ext_temp = 21.0
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    cancel = MagicMock()
+    zone._coast_settle_timer = cancel
+    zone._handle_demand(True)  # rising edge (re-fire) before settle
+    cancel.assert_called_once()
+    assert zone._coast_settle_timer is None
+    assert zone._overshoot.sampling is False
 
 
 def test_demand_rising_edge_closes_sample_early():
@@ -318,6 +357,17 @@ def test_coast_window_seconds_from_constructor():
         coast_window_min=30,
     )
     assert zone._coast_window_s == 30 * 60
+
+
+def test_coast_settle_seconds_from_constructor():
+    coord = _make_coordinator()
+    zone = OnnaClimate(
+        coord, "Salón+Cocina",
+        "1_0_4", "1_0_3", "1_0_2", "1_0_1", "1_0_0", "1_0_7",
+        external_temp_entity_id="sensor.ext",
+        coast_settle_min=3,
+    )
+    assert zone._coast_settle_s == 3 * 60
 
 
 

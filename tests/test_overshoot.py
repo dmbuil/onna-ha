@@ -69,6 +69,18 @@ def test_invalidate_drops_in_flight_sample_without_learning():
     assert lrn.learned_heat == 0.5  # unchanged
 
 
+def test_sample_without_observations_does_not_change_learned():
+    # A coast window shorter than the external sensor's reporting interval
+    # receives zero observe() calls; extreme stays == start.  Such a sample
+    # measured nothing and must be discarded, not blended in as 0 (which would
+    # decay the learned value toward zero every time — the real-world bug).
+    lrn = OvershootLearner(learned_cool=0.6)
+    lrn.start_sample(start_temp=25.0, is_winter=False)
+    lrn.close_sample()  # no observe() in between
+    assert lrn.learned_cool == 0.6  # unchanged, not decayed
+    assert lrn.sampling is False
+
+
 def test_observe_and_close_are_noops_when_not_sampling():
     lrn = OvershootLearner(learned_heat=0.5)
     lrn.observe(30.0)      # ignored

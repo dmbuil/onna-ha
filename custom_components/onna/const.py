@@ -32,6 +32,11 @@ DEFAULT_WINDOW_OPEN_DELAY = 600
 # --- Smart-thermostat layer (v2.0) tunables, set via the "Smart features" step ---
 # Overshoot: how long after demand-off the slab-coast is sampled (minutes).
 DEFAULT_COAST_WINDOW_MIN = 90
+# Overshoot: demand must stay off continuously for this long (minutes) before a
+# coast sample is opened.  The Onna PI loop chatters its demand flag on a
+# sub-minute cadence; without this settle period every micro-cycle would open a
+# meaningless sample.  Must exceed the loop's longest chatter idle gap.
+DEFAULT_COAST_SETTLE_MIN = 5
 # Seasonal gating thresholds on the 48 h outdoor EMA.
 DEFAULT_HEAT_OFF_ABOVE = 20.0   # winter: pause zones when it is warmer than this
 DEFAULT_COOL_OFF_BELOW = 16.0   # summer: pause zones when it is colder than this
@@ -42,6 +47,7 @@ OPT_OUTDOOR_SOURCE  = "outdoor_source"
 OPT_HEAT_OFF_ABOVE  = "heat_off_above"
 OPT_COOL_OFF_BELOW  = "cool_off_below"
 OPT_COAST_WINDOW_MIN = "coast_window_min"
+OPT_COAST_SETTLE_MIN = "coast_settle_min"
 
 # Global thermostat presets (same values for every zone).  Each preset stores a
 # (heat, cool) pair: `heat` is applied when the installation is in winter mode

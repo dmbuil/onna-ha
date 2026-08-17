@@ -35,6 +35,7 @@ class OvershootLearner:
         self._sampling = False
         self._start = 0.0
         self._extreme = 0.0
+        self._observations = 0
         self._is_winter = True
 
     @property
@@ -54,6 +55,7 @@ class OvershootLearner:
         self._sampling = True
         self._start = float(start_temp)
         self._extreme = float(start_temp)
+        self._observations = 0
         self._is_winter = bool(is_winter)
 
     def observe(self, ext_temp: float) -> None:
@@ -61,6 +63,7 @@ class OvershootLearner:
         if not self._sampling:
             return
         value = float(ext_temp)
+        self._observations += 1
         if self._is_winter:
             self._extreme = max(self._extreme, value)
         else:
@@ -69,6 +72,13 @@ class OvershootLearner:
     def close_sample(self) -> None:
         """Finalise the in-flight sample and blend it into the learned value."""
         if not self._sampling:
+            return
+        # A sample that never received a reading (coast window shorter than the
+        # external sensor's reporting interval) measured nothing.  Blending its
+        # extreme == start as a 0 coast would decay the learned value toward
+        # zero on every chattering demand cycle — discard it instead.
+        if self._observations == 0:
+            self._sampling = False
             return
         if self._is_winter:
             sample = self._extreme - self._start

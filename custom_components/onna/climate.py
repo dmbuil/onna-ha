@@ -109,7 +109,9 @@ from .const import (
     DEFAULT_SETPOINT_HYSTERESIS,
     DEFAULT_WINDOW_OPEN_DELAY,
     DEFAULT_COAST_WINDOW_MIN,
+    DEFAULT_COAST_SETTLE_MIN,
     OPT_COAST_WINDOW_MIN,
+    OPT_COAST_SETTLE_MIN,
     DOMAIN,
 )
 from .coordinator import (
@@ -148,6 +150,9 @@ async def async_setup_entry(
     coast_window_min = int(
         entry.options.get(OPT_COAST_WINDOW_MIN, DEFAULT_COAST_WINDOW_MIN)
     )
+    coast_settle_min = int(
+        entry.options.get(OPT_COAST_SETTLE_MIN, DEFAULT_COAST_SETTLE_MIN)
+    )
     # Merge configured preset pairs over the defaults so a partial option
     # (e.g. only "comfort" customised) still yields a complete set.
     raw_presets = entry.options.get("preset_temps", {})
@@ -174,6 +179,7 @@ async def async_setup_entry(
             window_open_delay=window_delay,
             preset_temps=preset_temps,
             coast_window_min=coast_window_min,
+            coast_settle_min=coast_settle_min,
         ))
 
     coordinator.register_address(_WINTER_ADDR)
@@ -235,6 +241,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         window_open_delay: int = DEFAULT_WINDOW_OPEN_DELAY,
         preset_temps: dict[str, tuple[float, float]] | None = None,
         coast_window_min: int = DEFAULT_COAST_WINDOW_MIN,
+        coast_settle_min: int = DEFAULT_COAST_SETTLE_MIN,
     ) -> None:
         self._coordinator    = coordinator
         self._attr_name      = name
@@ -299,8 +306,16 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         if self._overshoot is not None:
             coordinator.data[f"overshoot_{onoff_r_addr}"] = 0.0
         self._coast_window_s = int(coast_window_min) * 60
+        # Demand must stay off this long before a coast sample opens — filters
+        # the PI loop's sub-minute demand chatter (see DEFAULT_COAST_SETTLE_MIN).
+        self._coast_settle_s = int(coast_settle_min) * 60
         # Cancellation handle for the coast-window timer; None when idle.
         self._coast_cancel_timer: Any = None
+        # Cancellation handle for the settle timer armed on demand-off; None when
+        # idle.  Room temp captured at demand-off, used as the sample start once
+        # the settle period elapses.
+        self._coast_settle_timer: Any = None
+        self._pending_start_temp: float | None = None
         # Installation-wide seasonal gate, mirrored locally like the window pause.
         # Seeded from the coordinator so a zone created while the gate is already
         # open starts paused.
@@ -729,10 +744,14 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             )
 
     def _abort_overshoot_sample(self) -> None:
-        """Cancel the coast timer and drop any in-flight overshoot sample."""
+        """Cancel any coast/settle timer and drop any in-flight overshoot sample."""
         if self._coast_cancel_timer is not None:
             self._coast_cancel_timer()
             self._coast_cancel_timer = None
+        if self._coast_settle_timer is not None:
+            self._coast_settle_timer()
+            self._coast_settle_timer = None
+        self._pending_start_temp = None
         if self._overshoot is not None:
             self._overshoot.invalidate()
 
@@ -774,10 +793,17 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             falling = self._demand and not new_demand
             rising = not self._demand and new_demand
             if falling and self._is_on and self._ext_temp is not None:
-                self._overshoot.start_sample(self._ext_temp, self._winter)
-                self._coast_cancel_timer = async_call_later(
-                    self.hass, self._coast_window_s, self._coast_elapsed
+                # Defer the sample: only a demand-off that *persists* through the
+                # settle window is a real coast.  Capture the start temp now.
+                self._pending_start_temp = self._ext_temp
+                self._coast_settle_timer = async_call_later(
+                    self.hass, self._coast_settle_s, self._coast_settle_elapsed
                 )
+            elif rising and self._coast_settle_timer is not None:
+                # Demand re-fired before settling → chatter, not a coast.
+                self._coast_settle_timer()
+                self._coast_settle_timer = None
+                self._pending_start_temp = None
             elif rising and self._overshoot.sampling:
                 if self._coast_cancel_timer is not None:
                     self._coast_cancel_timer()
@@ -786,6 +812,21 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
                 self._publish_overshoot()
         self._demand = new_demand
         self.async_write_ha_state()
+
+    @callback
+    def _coast_settle_elapsed(self, _now: Any) -> None:
+        """Demand stayed off through the settle window → open the coast sample.
+
+        The sample starts from the temperature captured at demand-off and runs
+        until demand re-fires or the coast window elapses.
+        """
+        self._coast_settle_timer = None
+        if self._overshoot is not None and self._pending_start_temp is not None:
+            self._overshoot.start_sample(self._pending_start_temp, self._winter)
+            self._pending_start_temp = None
+            self._coast_cancel_timer = async_call_later(
+                self.hass, self._coast_window_s, self._coast_elapsed
+            )
 
     @callback
     def _handle_winter(self, value: Any) -> None:

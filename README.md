@@ -75,7 +75,13 @@ Restart Home Assistant.
 
 ## Configuration
 
-Go to **Settings → Devices & Services → Add Integration** and search for **Onna**.
+Just click here:
+
+[![test](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=onna)
+
+Or go to **Settings → Devices & Services → Add Integration** and search for **Onna**.
+
+THen enter the following information:
 
 | Option  | Required | Description                                                     | Example        |
 | ------- | :------: | --------------------------------------------------------------- | -------------- |
@@ -164,11 +170,11 @@ All entities are grouped under a single **Onna** device.
 Each heating/cooling zone is exposed as a climate entity, plus a single master
 thermostat for the whole installation.
 
-| Name                | Type                          | Notes                                                          |
-| ------------------- | ----------------------------- | -------------------------------------------------------------- |
-| Salón+Cocina        | Zone thermostat (`HEAT_COOL`) | Dual setpoint + presets                                        |
-| Dorm. Principal     | Zone thermostat (`HEAT_COOL`) | Dual setpoint + presets                                        |
-| Dorm. 2 / 3 / 4     | Zone thermostat (`HEAT_COOL`) | Dual setpoint + presets                                        |
+| Name                | Type                          | Notes                                                         |
+| ------------------- | ----------------------------- | ------------------------------------------------------------- |
+| Salón+Cocina        | Zone thermostat (`HEAT_COOL`) | Dual setpoint + presets                                       |
+| Dorm. Principal     | Zone thermostat (`HEAT_COOL`) | Dual setpoint + presets                                       |
+| Dorm. 2 / 3 / 4     | Zone thermostat (`HEAT_COOL`) | Dual setpoint + presets                                       |
 | Temperatura General | Master thermostat             | Write-only broadcast of setpoint / on-off / mode to all zones |
 
 **Zone thermostats** are dual-setpoint range entities: `target_temp_low` is the
@@ -209,10 +215,10 @@ by all zones) and configured in the options flow. Defaults:
 
 | Preset  | Heating (winter / `low`) | Cooling (summer / `high`) |
 | ------- | :----------------------: | :-----------------------: |
-| Away    |          16.0 °C         |          30.0 °C          |
-| Eco     |          18.0 °C         |          27.0 °C          |
-| Sleep   |          19.0 °C         |          26.0 °C          |
-| Comfort |          21.0 °C         |          24.0 °C          |
+| Away    |         16.0 °C          |          30.0 °C          |
+| Eco     |         18.0 °C          |          27.0 °C          |
+| Sleep   |         19.0 °C          |          26.0 °C          |
+| Comfort |         21.0 °C          |          24.0 °C          |
 
 The heating value must be ≤ the cooling value for every preset (validated in the
 options flow). Selecting a preset loads both sliders and writes the active-season
@@ -228,17 +234,25 @@ sensor** configured, the integration learns that coast per zone and per season
 from the real room temperature and **pre-dampens the written setpoint** so the
 room settles closer to target.
 
-* Self-calibrating — an exponential moving average of the observed coast; no
+* Self-calibrating: an exponential moving average of the observed coast; no
   tuning required.
 * Applied only once the learned coast is meaningful (≥ 0.2 °C) and clamped to a
   maximum of 2 °C.
 * Works in both heating and cooling, and survives restarts.
 * Only affects zones with an external sensor — the Onna probe cannot measure the
   true room overshoot.
+* **Chatter-resistant**: the Onna PI loop toggles its demand flag on a sub-minute
+  cadence, so a coast is only sampled after demand has stayed off for a
+  configurable **settle period** (default 5 min). Samples that capture no external
+  reading (window shorter than the sensor's reporting interval) are discarded
+  rather than learned as a zero coast — for reliable learning the external sensor
+  should report at least every minute or two.
 
-**Formulas.** On each *demand-off → coast* cycle a sample is measured, blended
-into the per-season learned value, and subtracted from (or, in summer, added to)
-the written setpoint.
+**Formulas.** Once demand has stayed off for the **settle period** (default 5 min,
+which filters the PI loop's demand chatter), a coast sample is opened, measured,
+blended into the per-season learned value, and subtracted from (or, in summer,
+added to) the written setpoint. A sample that receives no external-sensor reading
+before it closes is discarded.
 
 1. **Sample** the coast over the window (default 90 min), clamped to $[0, 3]\,^\circ\text{C}$:
 
@@ -300,10 +314,10 @@ moving average** of an outdoor source (a `weather` entity or a temperature
 Two optional sensors let you graph how the smart layer adapts over time
 (Settings → *History*):
 
-| Name                     | Unit | Created when …                              | Shows                                                                 |
-| ------------------------ | ---- | ------------------------------------------- | --------------------------------------------------------------------- |
-| Media Exterior           | °C   | an outdoor source is configured             | the 48-hour outdoor EMA that drives seasonal gating                   |
-| `<Zone>` Inercia Aprendida | °C | the zone has an external sensor configured  | the learned overshoot for the **active** season (rises as it adapts)  |
+| Name                       | Unit | Created when …                             | Shows                                                                |
+| -------------------------- | ---- | ------------------------------------------ | -------------------------------------------------------------------- |
+| Media Exterior             | °C   | an outdoor source is configured            | the 48-hour outdoor EMA that drives seasonal gating                  |
+| `<Zone>` Inercia Aprendida | °C   | the zone has an external sensor configured | the learned overshoot for the **active** season (rises as it adapts) |
 
 > [!NOTE]
 > `Inercia Aprendida` reports the *learned* coast so you can watch the adaptation
@@ -314,12 +328,12 @@ Two optional sensors let you graph how the smart layer adapts over time
 
 Configure everything under **Settings → Devices & Services → Onna → Configure**:
 
-| Menu entry     | What it configures                                                              |
-| -------------- | ------------------------------------------------------------------------------- |
-| Zone sensors   | Per-zone external temperature sensor and window sensor                          |
-| General        | Setpoint hysteresis and window-open delay                                       |
-| Presets        | The 8 preset temperatures (4 presets × heating/cooling)                         |
-| Smart features | Outdoor source, winter/summer gating thresholds, and the overshoot coast window |
+| Menu entry     | What it configures                                                                                |
+| -------------- | ------------------------------------------------------------------------------------------------- |
+| Zone sensors   | Per-zone external temperature sensor and window sensor                                            |
+| General        | Setpoint hysteresis and window-open delay                                                         |
+| Presets        | The 8 preset temperatures (4 presets × heating/cooling)                                           |
+| Smart features | Outdoor source, winter/summer gating thresholds, and the overshoot coast window and settle period |
 
 Changing any option reloads the integration, so new values apply without
 restarting Home Assistant.

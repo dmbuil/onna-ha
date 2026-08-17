@@ -266,6 +266,19 @@ async def test_smart_step_saves_options_and_preserves_others():
 
 
 @pytest.mark.anyio
+async def test_smart_step_saves_coast_settle_min():
+    flow = _options_flow()
+    result = await flow.async_step_smart(user_input={
+        "outdoor_source": "",
+        "heat_off_above": 20.0,
+        "cool_off_below": 16.0,
+        "coast_window_min": 90,
+        "coast_settle_min": 3,
+    })
+    assert result["data"]["coast_settle_min"] == 3
+
+
+@pytest.mark.anyio
 async def test_smart_step_empty_source_stored_as_none():
     flow = _options_flow()
     result = await flow.async_step_smart(user_input={

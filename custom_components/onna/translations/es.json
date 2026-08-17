@@ -89,7 +89,8 @@
           "outdoor_source": "Fuente exterior (entidad weather o sensor de temperatura)",
           "heat_off_above": "Invierno: pausar si la media exterior supera (°C)",
           "cool_off_below": "Verano: pausar si la media exterior baja de (°C)",
-          "coast_window_min": "Ventana de inercia del overshoot (min)"
+          "coast_window_min": "Ventana de inercia del overshoot (min)",
+          "coast_settle_min": "Periodo de estabilización — demanda apagada este tiempo antes de muestrear (min)"
         }
       }
     },

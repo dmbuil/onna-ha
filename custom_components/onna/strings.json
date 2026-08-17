@@ -89,7 +89,8 @@
           "outdoor_source": "Outdoor source (weather or temperature sensor)",
           "heat_off_above": "Winter: pause when outdoor average is above (°C)",
           "cool_off_below": "Summer: pause when outdoor average is below (°C)",
-          "coast_window_min": "Overshoot coast window (min)"
+          "coast_window_min": "Overshoot coast window (min)",
+          "coast_settle_min": "Overshoot settle period — demand off this long before sampling (min)"
         }
       }
     },

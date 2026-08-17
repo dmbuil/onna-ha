@@ -25,10 +25,12 @@ from .const import (
     DEFAULT_HEAT_OFF_ABOVE,
     DEFAULT_COOL_OFF_BELOW,
     DEFAULT_COAST_WINDOW_MIN,
+    DEFAULT_COAST_SETTLE_MIN,
     OPT_OUTDOOR_SOURCE,
     OPT_HEAT_OFF_ABOVE,
     OPT_COOL_OFF_BELOW,
     OPT_COAST_WINDOW_MIN,
+    OPT_COAST_SETTLE_MIN,
     DOMAIN,
     PRESET_KEYS,
 )
@@ -178,6 +180,9 @@ class OnnaOptionsFlow(OptionsFlow):
                     OPT_HEAT_OFF_ABOVE: float(user_input[OPT_HEAT_OFF_ABOVE]),
                     OPT_COOL_OFF_BELOW: float(user_input[OPT_COOL_OFF_BELOW]),
                     OPT_COAST_WINDOW_MIN: int(user_input[OPT_COAST_WINDOW_MIN]),
+                    OPT_COAST_SETTLE_MIN: int(
+                        user_input.get(OPT_COAST_SETTLE_MIN, DEFAULT_COAST_SETTLE_MIN)
+                    ),
                 }
             )
 
@@ -209,6 +214,13 @@ class OnnaOptionsFlow(OptionsFlow):
             default=opts.get(OPT_COAST_WINDOW_MIN, DEFAULT_COAST_WINDOW_MIN),
         )] = NumberSelector(NumberSelectorConfig(
             min=15, max=240, step=5,
+            unit_of_measurement="min", mode=NumberSelectorMode.BOX,
+        ))
+        fields[vol.Optional(
+            OPT_COAST_SETTLE_MIN,
+            default=opts.get(OPT_COAST_SETTLE_MIN, DEFAULT_COAST_SETTLE_MIN),
+        )] = NumberSelector(NumberSelectorConfig(
+            min=1, max=30, step=1,
             unit_of_measurement="min", mode=NumberSelectorMode.BOX,
         ))
         return self.async_show_form(
