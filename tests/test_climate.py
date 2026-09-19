@@ -15,6 +15,9 @@ def _make_coordinator(data=None):
     coord.data = data or {}
     coord.client._onna_id = "TESTID"
     coord.client.async_set_address_value = AsyncMock()
+    # A real coordinator defaults the seasonal gate off; the bare MagicMock would
+    # otherwise return a truthy auto-attribute and seed zones as paused.
+    coord.seasonal_gate_active = False
     return coord
 
 
@@ -25,6 +28,346 @@ def _make_zone(data=None):
         "1_0_4", "1_0_3", "1_0_2",
         "1_0_1", "1_0_0", "1_0_7",
     )
+
+
+def _make_zone_ext(data=None, learned_heat=0.0, learned_cool=0.0):
+    """Zone with an external sensor configured and a primed overshoot learner."""
+    coord = _make_coordinator(data)
+    zone = OnnaClimate(
+        coord, "Salón+Cocina",
+        "1_0_4", "1_0_3", "1_0_2",
+        "1_0_1", "1_0_0", "1_0_7",
+        external_temp_entity_id="sensor.ext",
+    )
+    zone._ext_available = True
+    from custom_components.onna.overshoot import OvershootLearner
+    zone._overshoot = OvershootLearner(learned_heat=learned_heat, learned_cool=learned_cool)
+    return zone
+
+
+def test_overshoot_learner_none_without_external_sensor():
+    zone = _make_zone()
+    assert zone._overshoot is None
+
+
+def test_damping_subtracts_in_winter():
+    # winter, external offset zero (ext == onna), learned_heat 0.5 → setpoint - 0.5
+    zone = _make_zone_ext({"0_0_7": True}, learned_heat=0.5)
+    zone._target_temp = 22.0
+    zone._ext_temp = 20.0
+    zone._onna_temp = 20.0  # offset 0
+    assert zone._compute_onna_setpoint() == 21.5
+
+
+def test_damping_adds_in_summer():
+    zone = _make_zone_ext({"0_0_7": False}, learned_cool=0.5)
+    zone._target_temp = 24.0
+    zone._ext_temp = 20.0
+    zone._onna_temp = 20.0
+    assert zone._compute_onna_setpoint() == 24.5
+
+
+def test_no_damping_below_threshold():
+    zone = _make_zone_ext({"0_0_7": True}, learned_heat=0.1)  # < APPLY_THRESHOLD
+    zone._target_temp = 22.0
+    zone._ext_temp = 20.0
+    zone._onna_temp = 20.0
+    assert zone._compute_onna_setpoint() == 22.0
+
+
+def test_demand_falling_edge_defers_sample_until_settled():
+    # A falling demand edge must NOT start a sample immediately.  It arms the
+    # settle timer, filtering the PI loop's sub-minute demand chatter — sampling
+    # only begins once demand has stayed off through the settle window.
+    zone = _make_zone_ext({"1_0_1": True, "1_0_7": True, "0_0_7": True})
+    zone._is_on = True
+    zone._demand = True
+    zone._ext_temp = 21.0
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    with patch(
+        "custom_components.onna.climate.async_call_later", return_value=MagicMock()
+    ) as call_later:
+        zone._handle_demand(False)  # falling edge
+    assert zone._overshoot.sampling is False       # not sampling yet
+    assert zone._coast_settle_timer is not None    # settle timer armed
+    assert zone._pending_start_temp == 21.0        # start temp captured now
+    call_later.assert_called_once()
+
+
+def test_settle_elapsed_starts_sample():
+    # When demand has stayed off through the settle window, the coast sample
+    # begins from the temperature captured at demand-off.
+    zone = _make_zone_ext({"0_0_7": True})
+    zone._is_on = True
+    zone._winter = True
+    zone._ext_temp = 21.2
+    zone._pending_start_temp = 21.0
+    zone.hass = MagicMock()
+    with patch("custom_components.onna.climate.async_call_later", return_value=MagicMock()):
+        zone._coast_settle_elapsed(None)
+    assert zone._overshoot.sampling is True
+    assert zone._coast_cancel_timer is not None    # coast window now running
+
+
+def test_demand_chatter_cancels_pending_settle():
+    # Demand re-firing before the settle window elapses is chatter: the pending
+    # settle is cancelled and no sample starts.
+    zone = _make_zone_ext({"0_0_7": True})
+    zone._is_on = True
+    zone._demand = False
+    zone._ext_temp = 21.0
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    cancel = MagicMock()
+    zone._coast_settle_timer = cancel
+    zone._handle_demand(True)  # rising edge (re-fire) before settle
+    cancel.assert_called_once()
+    assert zone._coast_settle_timer is None
+    assert zone._overshoot.sampling is False
+
+
+def test_demand_rising_edge_closes_sample_early():
+    zone = _make_zone_ext({"1_0_1": True, "0_0_7": True})
+    zone._is_on = True
+    zone._demand = False
+    zone._ext_temp = 21.0
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._overshoot.start_sample(21.0, is_winter=True)
+    zone._overshoot.observe(21.6)
+    zone._coast_cancel_timer = MagicMock()
+    zone._handle_demand(True)  # rising edge closes the sample
+    assert zone._overshoot.sampling is False
+    assert zone._overshoot.learned_heat > 0.0
+
+
+def test_external_temp_update_feeds_observe():
+    zone = _make_zone_ext({"0_0_7": True})
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._overshoot.start_sample(21.0, is_winter=True)
+    event = MagicMock()
+    ns = MagicMock(); ns.state = "21.9"
+    event.data = {"new_state": ns}
+    zone._handle_external_temp(event)
+    zone._overshoot.close_sample()
+    assert zone._overshoot.learned_heat > 0.0  # 21.9 peak captured
+
+
+@pytest.mark.anyio
+async def test_turn_off_aborts_in_flight_sample():
+    zone = _make_zone_ext({"0_0_7": True})
+    zone._overshoot.start_sample(21.0, is_winter=True)
+    zone._coast_cancel_timer = MagicMock()
+    await zone.async_turn_off()
+    assert zone._overshoot.sampling is False
+
+
+def test_external_sensor_unavailable_aborts_sample():
+    zone = _make_zone_ext({"0_0_7": True})
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._overshoot.start_sample(21.0, is_winter=True)
+    zone._coast_cancel_timer = MagicMock()
+    event = MagicMock()
+    ns = MagicMock(); ns.state = "unavailable"
+    event.data = {"new_state": ns}
+    zone._handle_external_temp(event)
+    assert zone._overshoot.sampling is False
+
+
+def test_extra_attrs_expose_learned_overshoot():
+    zone = _make_zone_ext({"0_0_7": True}, learned_heat=0.4, learned_cool=0.6)
+    attrs = zone.extra_state_attributes
+    assert attrs["_onna_overshoot_heat"] == 0.4
+    assert attrs["_onna_overshoot_cool"] == 0.6
+
+
+def test_no_overshoot_attrs_without_learner():
+    zone = _make_zone({"1_0_1": True})
+    attrs = zone.extra_state_attributes or {}
+    assert "_onna_overshoot_heat" not in attrs
+
+
+@pytest.mark.anyio
+async def test_restore_learned_overshoot(monkeypatch):
+    zone = _make_zone_ext({"0_0_7": True})
+    zone.hass = MagicMock()
+
+    last_state = MagicMock()
+    last_state.state = "heat_cool"
+    last_state.attributes = {
+        "target_temp_low": 21.0,
+        "target_temp_high": 25.0,
+        "_onna_overshoot_heat": 0.7,
+        "_onna_overshoot_cool": 0.3,
+    }
+
+    async def _fake_last_state():
+        return last_state
+    zone.async_get_last_state = _fake_last_state
+    zone.async_on_remove = MagicMock()
+    monkeypatch.setattr(
+        "custom_components.onna.climate.async_dispatcher_connect",
+        MagicMock(return_value=MagicMock()),
+    )
+    zone.hass.states.get = MagicMock(return_value=None)
+    await zone.async_added_to_hass()
+    assert zone._overshoot.learned_heat == 0.7
+    assert zone._overshoot.learned_cool == 0.3
+
+
+def test_seasonal_gate_open_pauses_running_zone():
+    zone = _make_zone({"1_0_1": True, "0_0_7": True})
+    zone._is_on = True
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._handle_seasonal_gate(True)
+    assert zone._seasonal_pause_active is True
+    zone.hass.async_create_task.assert_called_once()
+
+
+def test_seasonal_gate_clear_resumes_when_no_window_pause():
+    zone = _make_zone({"1_0_1": False, "0_0_7": True})
+    zone._is_on = False
+    zone._seasonal_pause_active = True
+    zone._window_pause_active = False
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._handle_seasonal_gate(False)
+    assert zone._seasonal_pause_active is False
+    zone.hass.async_create_task.assert_called_once()
+
+
+def test_seasonal_clear_does_not_resume_while_window_pause_active():
+    zone = _make_zone({"1_0_1": False, "0_0_7": True})
+    zone._is_on = False
+    zone._seasonal_pause_active = True
+    zone._window_pause_active = True   # window still holding the zone off
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._handle_seasonal_gate(False)
+    assert zone._seasonal_pause_active is False
+    zone.hass.async_create_task.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_user_turn_on_clears_seasonal_pause():
+    zone = _make_zone({"1_0_1": False})
+    zone._seasonal_pause_active = True
+    await zone.async_turn_on()
+    assert zone._seasonal_pause_active is False
+
+
+def test_extra_attrs_expose_seasonal_pause():
+    zone = _make_zone({"1_0_1": True})
+    zone._seasonal_pause_active = True
+    attrs = zone.extra_state_attributes
+    assert attrs["seasonal_pause_active"] is True
+
+
+def test_general_exposes_outdoor_ema():
+    coord = _make_coordinator()
+    coord.outdoor_ema_snapshot = MagicMock(return_value=(18.5, 123.0))
+    gen = OnnaGeneralClimate(coord)
+    attrs = gen.extra_state_attributes or {}
+    assert attrs["outdoor_ema"] == 18.5
+    assert attrs["outdoor_ema_updated"] == 123.0
+
+
+def test_general_without_ema_has_no_attr():
+    coord = _make_coordinator()
+    coord.outdoor_ema_snapshot = MagicMock(return_value=(None, None))
+    gen = OnnaGeneralClimate(coord)
+    attrs = gen.extra_state_attributes or {}
+    assert "outdoor_ema" not in attrs
+
+
+@pytest.mark.anyio
+async def test_general_restores_ema_into_coordinator(monkeypatch):
+    coord = _make_coordinator()
+    coord.seed_outdoor_ema = MagicMock()
+    gen = OnnaGeneralClimate(coord)
+    gen.hass = MagicMock()
+
+    last_state = MagicMock()
+    last_state.state = "heat"
+    last_state.attributes = {"outdoor_ema": 17.0, "outdoor_ema_updated": 99.0}
+
+    async def _fake_last_state():
+        return last_state
+    gen.async_get_last_state = _fake_last_state
+    gen.async_on_remove = MagicMock()
+    monkeypatch.setattr(
+        "custom_components.onna.climate.async_dispatcher_connect",
+        MagicMock(return_value=MagicMock()),
+    )
+    await gen.async_added_to_hass()
+    coord.seed_outdoor_ema.assert_called_once_with(17.0, 99.0)
+
+
+def test_publish_overshoot_writes_active_season_learned_winter():
+    from custom_components.onna.coordinator import SIGNAL_ADDRESS_UPDATE
+    zone = _make_zone_ext({"0_0_7": True}, learned_heat=0.4, learned_cool=0.7)
+    zone.hass = MagicMock()
+    with patch("custom_components.onna.climate.async_dispatcher_send") as send:
+        zone._publish_overshoot()
+    assert zone._coordinator.data["overshoot_1_0_1"] == 0.4
+    send.assert_called_once_with(
+        zone.hass, SIGNAL_ADDRESS_UPDATE.format(address_id="overshoot_1_0_1"), 0.4
+    )
+
+
+def test_publish_overshoot_writes_active_season_learned_summer():
+    zone = _make_zone_ext({"0_0_7": False}, learned_heat=0.4, learned_cool=0.7)
+    zone.hass = MagicMock()
+    with patch("custom_components.onna.climate.async_dispatcher_send"):
+        zone._publish_overshoot()
+    assert zone._coordinator.data["overshoot_1_0_1"] == 0.7
+
+
+def test_publish_overshoot_noop_without_learner():
+    zone = _make_zone({"0_0_7": True})
+    zone.hass = MagicMock()
+    with patch("custom_components.onna.climate.async_dispatcher_send") as send:
+        zone._publish_overshoot()
+    send.assert_not_called()
+    assert "overshoot_1_0_1" not in zone._coordinator.data
+
+
+def test_coast_elapsed_publishes_overshoot():
+    zone = _make_zone_ext({"0_0_7": True})
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._overshoot.start_sample(21.0, is_winter=True)
+    zone._overshoot.observe(21.8)
+    with patch("custom_components.onna.climate.async_dispatcher_send") as send:
+        zone._coast_elapsed(None)
+    assert zone._coordinator.data["overshoot_1_0_1"] > 0.0
+    send.assert_called_once()
+
+
+def test_coast_window_seconds_from_constructor():
+    coord = _make_coordinator()
+    zone = OnnaClimate(
+        coord, "Salón+Cocina",
+        "1_0_4", "1_0_3", "1_0_2", "1_0_1", "1_0_0", "1_0_7",
+        external_temp_entity_id="sensor.ext",
+        coast_window_min=30,
+    )
+    assert zone._coast_window_s == 30 * 60
+
+
+def test_coast_settle_seconds_from_constructor():
+    coord = _make_coordinator()
+    zone = OnnaClimate(
+        coord, "Salón+Cocina",
+        "1_0_4", "1_0_3", "1_0_2", "1_0_1", "1_0_0", "1_0_7",
+        external_temp_entity_id="sensor.ext",
+        coast_settle_min=3,
+    )
+    assert zone._coast_settle_s == 3 * 60
 
 
 
@@ -196,7 +539,9 @@ def test_climate_unique_id_uses_onoff_state_addr():
 
 
 @pytest.mark.anyio
-async def test_async_added_connects_five_signals():
+async def test_async_added_connects_six_signals():
+    # Five per-address signals (temp, setpoint, on/off, demand, winter) plus the
+    # installation-wide seasonal-gate signal.
     zone = _make_zone()
     zone.hass = MagicMock()
     zone.async_on_remove = MagicMock()
@@ -205,7 +550,7 @@ async def test_async_added_connects_five_signals():
         return_value=lambda: None,
     ) as mock_connect:
         await zone.async_added_to_hass()
-    assert mock_connect.call_count == 5
+    assert mock_connect.call_count == 6
 
 
 
@@ -666,6 +1011,28 @@ async def test_general_restores_hvac_mode_and_temperature():
         await general.async_added_to_hass()
     assert general.hvac_mode == HVACMode.COOL
     assert general.target_temperature == 19.0
+
+
+@pytest.mark.anyio
+async def test_general_reports_cooling_after_restart_without_new_telegrams():
+    """The bug: 0_0_7 only pushes when the season flips, so after a restart no
+    telegram ever arrives and the entity fell back to its winter default —
+    reporting `heating` in August.  The persisted value must cover the gap."""
+    from custom_components.onna.coordinator import OnnaCoordinator
+    from custom_components.onna.climate import HVACAction, HVACMode
+
+    client = MagicMock()
+    client.connected = True
+    client.on_connection_change = None
+    coord = OnnaCoordinator(MagicMock(), client, entry_id="abc123")
+    coord._store.saved = {"0_0_7": 0}          # summer, as last seen
+
+    await coord.async_restore_data()
+    coord.register_address("0_0_7")
+    general = OnnaGeneralClimate(coord)
+    general._hvac_mode = HVACMode.COOL          # as restored by RestoreEntity
+
+    assert general.hvac_action == HVACAction.COOLING
 
 
 def test_general_handle_winter_updates_action():

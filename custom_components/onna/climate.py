@@ -96,7 +96,10 @@ from homeassistant.components.climate import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.dispatcher import (
+    async_dispatcher_connect,
+    async_dispatcher_send,
+)
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -105,10 +108,19 @@ from .const import (
     DEFAULT_PRESET_TEMPS,
     DEFAULT_SETPOINT_HYSTERESIS,
     DEFAULT_WINDOW_OPEN_DELAY,
+    DEFAULT_COAST_WINDOW_MIN,
+    DEFAULT_COAST_SETTLE_MIN,
+    OPT_COAST_WINDOW_MIN,
+    OPT_COAST_SETTLE_MIN,
     DOMAIN,
 )
-from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
+from .coordinator import (
+    OnnaCoordinator,
+    SIGNAL_ADDRESS_UPDATE,
+    SIGNAL_SEASONAL_GATE,
+)
 from .entity import OnnaEntity
+from .overshoot import OvershootLearner
 
 # KNX address for the installation-wide heating/cooling mode (DPT 1.001: 1=winter, 0=summer).
 # All five zones share this single address; individual zones can only turn ON/OFF.
@@ -135,6 +147,12 @@ async def async_setup_entry(
     window_sensors = entry.options.get("climate_window_sensor", {})
     hysteresis = float(entry.options.get("setpoint_hysteresis", DEFAULT_SETPOINT_HYSTERESIS))
     window_delay = int(entry.options.get("window_open_delay", DEFAULT_WINDOW_OPEN_DELAY))
+    coast_window_min = int(
+        entry.options.get(OPT_COAST_WINDOW_MIN, DEFAULT_COAST_WINDOW_MIN)
+    )
+    coast_settle_min = int(
+        entry.options.get(OPT_COAST_SETTLE_MIN, DEFAULT_COAST_SETTLE_MIN)
+    )
     # Merge configured preset pairs over the defaults so a partial option
     # (e.g. only "comfort" customised) still yields a complete set.
     raw_presets = entry.options.get("preset_temps", {})
@@ -160,6 +178,8 @@ async def async_setup_entry(
             setpoint_hysteresis=hysteresis,
             window_open_delay=window_delay,
             preset_temps=preset_temps,
+            coast_window_min=coast_window_min,
+            coast_settle_min=coast_settle_min,
         ))
 
     coordinator.register_address(_WINTER_ADDR)
@@ -220,6 +240,8 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         setpoint_hysteresis: float = DEFAULT_SETPOINT_HYSTERESIS,
         window_open_delay: int = DEFAULT_WINDOW_OPEN_DELAY,
         preset_temps: dict[str, tuple[float, float]] | None = None,
+        coast_window_min: int = DEFAULT_COAST_WINDOW_MIN,
+        coast_settle_min: int = DEFAULT_COAST_SETTLE_MIN,
     ) -> None:
         self._coordinator    = coordinator
         self._attr_name      = name
@@ -271,6 +293,35 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         # that after an HA restart we can recognise the stale Onna echo and not overwrite the
         # restored user setpoint with the compensated value.
         self._last_written_setpoint: float | None = None
+
+        # Overshoot damping only applies where we can measure the real room via
+        # an external sensor; the Onna probe cannot see the coast.  No external
+        # sensor → no learner → no damping.
+        self._overshoot: OvershootLearner | None = (
+            OvershootLearner() if external_temp_entity_id else None
+        )
+        # Seed the monitoring synthetic address so its sensor is not "unknown"
+        # on first render, before any coast has been learned (dispatch happens
+        # later, once hass is available).
+        if self._overshoot is not None:
+            coordinator.data[f"overshoot_{onoff_r_addr}"] = 0.0
+        self._coast_window_s = int(coast_window_min) * 60
+        # Demand must stay off this long before a coast sample opens — filters
+        # the PI loop's sub-minute demand chatter (see DEFAULT_COAST_SETTLE_MIN).
+        self._coast_settle_s = int(coast_settle_min) * 60
+        # Cancellation handle for the coast-window timer; None when idle.
+        self._coast_cancel_timer: Any = None
+        # Cancellation handle for the settle timer armed on demand-off; None when
+        # idle.  Room temp captured at demand-off, used as the sample start once
+        # the settle period elapses.
+        self._coast_settle_timer: Any = None
+        self._pending_start_temp: float | None = None
+        # Installation-wide seasonal gate, mirrored locally like the window pause.
+        # Seeded from the coordinator so a zone created while the gate is already
+        # open starts paused.
+        self._seasonal_pause_active: bool = bool(
+            getattr(coordinator, "seasonal_gate_active", False)
+        )
 
     @property
     def current_temperature(self) -> float | None:
@@ -340,6 +391,9 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         ):
             offset = self._ext_temp - self._onna_temp
             compensated = self._target_temp - offset
+            if self._overshoot is not None:
+                damp = self._overshoot.damping(self._winter)
+                compensated = compensated - damp if self._winter else compensated + damp
             return max(self._attr_min_temp, min(self._attr_max_temp, round(compensated, 1)))
         return self._target_temp
 
@@ -391,6 +445,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         # and must not overwrite this stored user intent).
         # A manual slider change always drops the zone to Manual (none).
         self._preset_mode = PRESET_NONE
+        self._abort_overshoot_sample()
         self.async_write_ha_state()
         # Clear last_written_setpoint so the next _push call always writes,
         # even if the compensated value happens to equal the previous write.
@@ -404,6 +459,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         nothing (the zone keeps following the general broadcast / Onna app).
         """
         self._preset_mode = preset_mode
+        self._abort_overshoot_sample()
         if preset_mode != PRESET_NONE:
             heat, cool = self._preset_temps[preset_mode]
             if self._winter:
@@ -422,6 +478,8 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         will NOT auto-resume (the user took explicit control of this zone).
         """
         self._window_pause_active = False
+        self._seasonal_pause_active = False
+        self._abort_overshoot_sample()
         await self._coordinator.client.async_set_address_value(self._onoff_w, 1)
 
     async def async_turn_off(self) -> None:
@@ -431,6 +489,8 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         will NOT turn the zone back on (the user explicitly turned it off).
         """
         self._window_pause_active = False
+        self._seasonal_pause_active = False
+        self._abort_overshoot_sample()
         await self._coordinator.client.async_set_address_value(self._onoff_w, 0)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
@@ -478,6 +538,13 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             preset = last_state.attributes.get("preset_mode")
             if preset in self._attr_preset_modes:
                 self._preset_mode = preset
+            if self._overshoot is not None:
+                heat = last_state.attributes.get("_onna_overshoot_heat")
+                cool = last_state.attributes.get("_onna_overshoot_cool")
+                if heat is not None or cool is not None:
+                    self._overshoot = OvershootLearner.from_dict(
+                        {"heat": heat or 0.0, "cool": cool or 0.0}
+                    )
             if self._external_temp:
                 # Restore the last compensated value so _handle_setpoint can
                 # detect and discard the stale echo Onna sends on reconnect.
@@ -489,6 +556,10 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             restored_window_pause = bool(
                 last_state.attributes.get("window_pause_active")
             )
+            # The seasonal pause likewise survives restarts; a gate-clear after
+            # the restart must be able to resume the zone.
+            if bool(last_state.attributes.get("seasonal_pause_active")):
+                self._seasonal_pause_active = True
             # Onna only pushes 1_X_1 (on/off) and 1_X_7 (demand) telegrams on
             # *changes*, so after a reload these flags would sit stale (zone
             # stuck on IDLE) until the device next toggles them.  Restore the
@@ -516,7 +587,17 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
                     handler,
                 )
             )
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_SEASONAL_GATE,
+                self._handle_seasonal_gate,
+            )
+        )
         self._subscribe_connection_signal()
+        # Push the (possibly restored) learned overshoot so its monitoring sensor
+        # reflects the correct value after a restart.
+        self._publish_overshoot()
         if self._external_temp:
             # Seed the external temperature from the current HA state machine
             # so compensation is active immediately (no wait for first push).
@@ -587,6 +668,13 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         if self._window_sensor:
             attrs["window_open"] = self._window_open
             attrs["window_pause_active"] = self._window_pause_active
+        if self._overshoot is not None and (
+            self._overshoot.learned_heat or self._overshoot.learned_cool
+        ):
+            attrs["_onna_overshoot_heat"] = self._overshoot.learned_heat
+            attrs["_onna_overshoot_cool"] = self._overshoot.learned_cool
+        if self._seasonal_pause_active:
+            attrs["seasonal_pause_active"] = True
         return attrs or None
 
     @callback
@@ -621,6 +709,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             # (3) genuine external change
             self._target_temp = value
             self._preset_mode = PRESET_NONE
+            self._abort_overshoot_sample()
             if self._external_temp and self._ext_available:
                 self._last_written_setpoint = None
         self.async_write_ha_state()
@@ -630,10 +719,114 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         self._is_on = bool(value)
         self.async_write_ha_state()
 
+    def _publish_overshoot(self) -> None:
+        """Publish the active-season learned overshoot as a synthetic address.
+
+        Feeds the per-zone monitoring sensor (see sensor.py) via the same
+        dispatcher path as real KNX addresses.  The *learned* value is exposed
+        (not the applied damping) so the sensor shows the adaptation continuously,
+        including while it is still below the application threshold.
+        """
+        if self._overshoot is None:
+            return
+        key = f"overshoot_{self._onoff_r}"
+        value = round(
+            self._overshoot.learned_heat if self._winter
+            else self._overshoot.learned_cool,
+            2,
+        )
+        self._coordinator.data[key] = value
+        if getattr(self, "hass", None) is not None:
+            async_dispatcher_send(
+                self.hass,
+                SIGNAL_ADDRESS_UPDATE.format(address_id=key),
+                value,
+            )
+
+    def _abort_overshoot_sample(self) -> None:
+        """Cancel any coast/settle timer and drop any in-flight overshoot sample."""
+        if self._coast_cancel_timer is not None:
+            self._coast_cancel_timer()
+            self._coast_cancel_timer = None
+        if self._coast_settle_timer is not None:
+            self._coast_settle_timer()
+            self._coast_settle_timer = None
+        self._pending_start_temp = None
+        if self._overshoot is not None:
+            self._overshoot.invalidate()
+
+    @callback
+    def _coast_elapsed(self, _now: Any) -> None:
+        """Coast window elapsed → finalise the sample and persist the learning."""
+        self._coast_cancel_timer = None
+        if self._overshoot is not None and self._overshoot.sampling:
+            self._overshoot.close_sample()
+            self._publish_overshoot()
+            self.async_write_ha_state()
+
+    def _resume_if_no_pause(self) -> None:
+        """Turn the zone back on only when no pause (window or seasonal) holds it."""
+        if not self._window_pause_active and not self._seasonal_pause_active:
+            self.hass.async_create_task(
+                self._coordinator.client.async_set_address_value(self._onoff_w, 1)
+            )
+
+    @callback
+    def _handle_seasonal_gate(self, active: bool) -> None:
+        """React to the installation-wide seasonal gate opening/closing."""
+        if active:
+            if self._is_on and not self._seasonal_pause_active:
+                self._seasonal_pause_active = True
+                self.hass.async_create_task(
+                    self._coordinator.client.async_set_address_value(self._onoff_w, 0)
+                )
+        else:
+            if self._seasonal_pause_active:
+                self._seasonal_pause_active = False
+                self._resume_if_no_pause()
+        self.async_write_ha_state()
+
     @callback
     def _handle_demand(self, value: Any) -> None:
-        self._demand = bool(value)
+        new_demand = bool(value)
+        if self._overshoot is not None and self._ext_available:
+            falling = self._demand and not new_demand
+            rising = not self._demand and new_demand
+            if falling and self._is_on and self._ext_temp is not None:
+                # Defer the sample: only a demand-off that *persists* through the
+                # settle window is a real coast.  Capture the start temp now.
+                self._pending_start_temp = self._ext_temp
+                self._coast_settle_timer = async_call_later(
+                    self.hass, self._coast_settle_s, self._coast_settle_elapsed
+                )
+            elif rising and self._coast_settle_timer is not None:
+                # Demand re-fired before settling → chatter, not a coast.
+                self._coast_settle_timer()
+                self._coast_settle_timer = None
+                self._pending_start_temp = None
+            elif rising and self._overshoot.sampling:
+                if self._coast_cancel_timer is not None:
+                    self._coast_cancel_timer()
+                    self._coast_cancel_timer = None
+                self._overshoot.close_sample()
+                self._publish_overshoot()
+        self._demand = new_demand
         self.async_write_ha_state()
+
+    @callback
+    def _coast_settle_elapsed(self, _now: Any) -> None:
+        """Demand stayed off through the settle window → open the coast sample.
+
+        The sample starts from the temperature captured at demand-off and runs
+        until demand re-fires or the coast window elapses.
+        """
+        self._coast_settle_timer = None
+        if self._overshoot is not None and self._pending_start_temp is not None:
+            self._overshoot.start_sample(self._pending_start_temp, self._winter)
+            self._pending_start_temp = None
+            self._coast_cancel_timer = async_call_later(
+                self.hass, self._coast_window_s, self._coast_elapsed
+            )
 
     @callback
     def _handle_winter(self, value: Any) -> None:
@@ -642,12 +835,15 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             # Season flipped: the active/inactive setpoints swap roles, and the
             # newly-active value must be (re)written to the KNX bus.
             self._winter = new_winter
+            self._abort_overshoot_sample()
             self._target_temp, self._inactive_target = (
                 self._inactive_target,
                 self._target_temp,
             )
             self.async_write_ha_state()
             self._last_written_setpoint = None
+            # The active season changed → the newly-active learned value differs.
+            self._publish_overshoot()
             if getattr(self, "hass", None) is not None:
                 self.hass.async_create_task(self._push_compensated_setpoint())
         else:
@@ -661,10 +857,14 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             try:
                 self._ext_temp = float(new_state.state)
                 self._ext_available = True
+                if self._overshoot is not None and self._overshoot.sampling:
+                    self._overshoot.observe(self._ext_temp)
             except ValueError:
                 self._ext_available = False
+                self._abort_overshoot_sample()
         else:
             self._ext_available = False
+            self._abort_overshoot_sample()
         self.async_write_ha_state()
         # External temp shifted → offset changed → re-push compensated setpoint.
         if self._ext_available and self._target_temp is not None:
@@ -706,11 +906,10 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         else:
             self._cancel_window_timer()
             if self._window_pause_active:
-                # Resume the zone that was paused by this window opening.
+                # Resume the zone that was paused by this window opening — but
+                # only if a seasonal pause is not also holding it off.
                 self._window_pause_active = False
-                self.hass.async_create_task(
-                    self._coordinator.client.async_set_address_value(self._onoff_w, 1)
-                )
+                self._resume_if_no_pause()
                 self.async_write_ha_state()
 
     @callback
@@ -793,6 +992,14 @@ class OnnaGeneralClimate(OnnaEntity, ClimateEntity, RestoreEntity):
             return HVACAction.OFF
         return HVACAction.HEATING if self._winter else HVACAction.COOLING
 
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        """Surface the installation-wide outdoor EMA (also persisted for restore)."""
+        value, updated = self._coordinator.outdoor_ema_snapshot()
+        if value is None:
+            return None
+        return {"outdoor_ema": value, "outdoor_ema_updated": updated}
+
     async def async_turn_on(self) -> None:
         await self._coordinator.client.async_set_address_value(_GENERAL_ONOFF_W, 1)
 
@@ -855,6 +1062,11 @@ class OnnaGeneralClimate(OnnaEntity, ClimateEntity, RestoreEntity):
                 self._hvac_mode = HVACMode(last_state.state)
             if (temp := last_state.attributes.get("temperature")) is not None:
                 self._target_temp = float(temp)
+            ema = last_state.attributes.get("outdoor_ema")
+            if ema is not None:
+                self._coordinator.seed_outdoor_ema(
+                    float(ema), last_state.attributes.get("outdoor_ema_updated")
+                )
 
         self.async_on_remove(
             async_dispatcher_connect(

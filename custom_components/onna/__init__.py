@@ -32,7 +32,16 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .client import OnnaClient
-from .const import CONF_HOST, CONF_ONNA_ID, DOMAIN
+from .const import (
+    CONF_HOST,
+    CONF_ONNA_ID,
+    DOMAIN,
+    DEFAULT_HEAT_OFF_ABOVE,
+    DEFAULT_COOL_OFF_BELOW,
+    OPT_OUTDOOR_SOURCE,
+    OPT_HEAT_OFF_ABOVE,
+    OPT_COOL_OFF_BELOW,
+)
 from .coordinator import OnnaCoordinator
 # Pre-import platform modules so HA's import_module never runs inside the event loop.
 from . import binary_sensor, climate, fan, sensor, switch, valve  # noqa: F401
@@ -106,12 +115,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         host=entry.data[CONF_HOST],
         onna_id=entry.data[CONF_ONNA_ID],
     )
-    coordinator = OnnaCoordinator(hass, client)
+    coordinator = OnnaCoordinator(hass, client, entry_id=entry.entry_id)
     coordinator.device_config = entry.data["device_config"]
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
+    # Onna only announces changes, so the last known value of every address has
+    # to come back from storage before any entity reads coordinator.data.
+    await coordinator.async_restore_data()
     await coordinator.async_start()
+    coordinator.configure_seasonal(
+        entry.options.get(OPT_OUTDOOR_SOURCE),
+        entry.options.get(OPT_HEAT_OFF_ABOVE, DEFAULT_HEAT_OFF_ABOVE),
+        entry.options.get(OPT_COOL_OFF_BELOW, DEFAULT_COOL_OFF_BELOW),
+    )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await coordinator.async_start_seasonal()
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 

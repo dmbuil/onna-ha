@@ -22,6 +22,15 @@ from .const import (
     DEFAULT_PRESET_TEMPS,
     DEFAULT_SETPOINT_HYSTERESIS,
     DEFAULT_WINDOW_OPEN_DELAY,
+    DEFAULT_HEAT_OFF_ABOVE,
+    DEFAULT_COOL_OFF_BELOW,
+    DEFAULT_COAST_WINDOW_MIN,
+    DEFAULT_COAST_SETTLE_MIN,
+    OPT_OUTDOOR_SOURCE,
+    OPT_HEAT_OFF_ABOVE,
+    OPT_COOL_OFF_BELOW,
+    OPT_COAST_WINDOW_MIN,
+    OPT_COAST_SETTLE_MIN,
     DOMAIN,
     PRESET_KEYS,
 )
@@ -121,7 +130,7 @@ class OnnaOptionsFlow(OptionsFlow):
     ) -> dict[str, Any]:
         return self.async_show_menu(
             step_id="init",
-            menu_options=["zone_picker", "general", "presets"],
+            menu_options=["zone_picker", "general", "presets", "smart"],
         )
 
     async def async_step_general(
@@ -157,6 +166,66 @@ class OnnaOptionsFlow(OptionsFlow):
             }
         )
         return self.async_show_form(step_id="general", data_schema=schema)
+
+    async def async_step_smart(
+        self, user_input: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Smart features: seasonal-gating source/thresholds and coast window."""
+        if user_input is not None:
+            source = (user_input.get(OPT_OUTDOOR_SOURCE) or "").strip()
+            return self.async_create_entry(
+                data={
+                    **dict(self.config_entry.options),
+                    OPT_OUTDOOR_SOURCE: source or None,
+                    OPT_HEAT_OFF_ABOVE: float(user_input[OPT_HEAT_OFF_ABOVE]),
+                    OPT_COOL_OFF_BELOW: float(user_input[OPT_COOL_OFF_BELOW]),
+                    OPT_COAST_WINDOW_MIN: int(user_input[OPT_COAST_WINDOW_MIN]),
+                    OPT_COAST_SETTLE_MIN: int(
+                        user_input.get(OPT_COAST_SETTLE_MIN, DEFAULT_COAST_SETTLE_MIN)
+                    ),
+                }
+            )
+
+        opts = self.config_entry.options
+        fields: dict[Any, Any] = {}
+        current_source = opts.get(OPT_OUTDOOR_SOURCE)
+        source_field = vol.Optional(OPT_OUTDOOR_SOURCE)
+        if current_source:
+            source_field = vol.Optional(OPT_OUTDOOR_SOURCE, default=current_source)
+        fields[source_field] = EntitySelector(
+            EntitySelectorConfig(domain=["weather", "sensor"])
+        )
+        fields[vol.Optional(
+            OPT_HEAT_OFF_ABOVE,
+            default=opts.get(OPT_HEAT_OFF_ABOVE, DEFAULT_HEAT_OFF_ABOVE),
+        )] = NumberSelector(NumberSelectorConfig(
+            min=5.0, max=35.0, step=0.5,
+            unit_of_measurement="°C", mode=NumberSelectorMode.BOX,
+        ))
+        fields[vol.Optional(
+            OPT_COOL_OFF_BELOW,
+            default=opts.get(OPT_COOL_OFF_BELOW, DEFAULT_COOL_OFF_BELOW),
+        )] = NumberSelector(NumberSelectorConfig(
+            min=5.0, max=35.0, step=0.5,
+            unit_of_measurement="°C", mode=NumberSelectorMode.BOX,
+        ))
+        fields[vol.Optional(
+            OPT_COAST_WINDOW_MIN,
+            default=opts.get(OPT_COAST_WINDOW_MIN, DEFAULT_COAST_WINDOW_MIN),
+        )] = NumberSelector(NumberSelectorConfig(
+            min=15, max=240, step=5,
+            unit_of_measurement="min", mode=NumberSelectorMode.BOX,
+        ))
+        fields[vol.Optional(
+            OPT_COAST_SETTLE_MIN,
+            default=opts.get(OPT_COAST_SETTLE_MIN, DEFAULT_COAST_SETTLE_MIN),
+        )] = NumberSelector(NumberSelectorConfig(
+            min=1, max=30, step=1,
+            unit_of_measurement="min", mode=NumberSelectorMode.BOX,
+        ))
+        return self.async_show_form(
+            step_id="smart", data_schema=vol.Schema(fields)
+        )
 
     async def async_step_presets(
         self, user_input: dict[str, Any] | None = None

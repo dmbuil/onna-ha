@@ -47,7 +47,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later
 
-from .const import DOMAIN
+from .const import DOMAIN, OPT_OUTDOOR_SOURCE
 from .coordinator import OnnaCoordinator, SIGNAL_ADDRESS_UPDATE
 from .entity import OnnaEntity
 
@@ -68,6 +68,27 @@ async def async_setup_entry(
         name, unit, device_class, state_class = info
         coordinator.register_address(address_id)
         entities.append(OnnaSensor(coordinator, address_id, name, unit, device_class, state_class))
+
+    # --- Smart-layer monitoring sensors (synthetic addresses, no KNX callback) ---
+    # The outdoor EMA (installation-wide) and each external-sensor zone's learned
+    # overshoot are published into coordinator.data by the coordinator/climate and
+    # pushed on the same dispatcher signal as real addresses, so they are ordinary
+    # OnnaSensors bound to synthetic address ids.
+    if entry.options.get(OPT_OUTDOOR_SOURCE):
+        entities.append(OnnaSensor(
+            coordinator, "outdoor_ema", "Media Exterior",
+            "°C", "temperature", "measurement",
+        ))
+    temp_overrides = entry.options.get("climate_temp_override", {})
+    for zone_id, info in coordinator.device_config.get("climate_addresses", {}).items():
+        if zone_id not in temp_overrides:
+            continue
+        zone_name, onoff_r = info[0], info[4]
+        entities.append(OnnaSensor(
+            coordinator, f"overshoot_{onoff_r}", f"{zone_name} Inercia Aprendida",
+            "°C", None, "measurement",
+        ))
+
     async_add_entities(entities)
 
 

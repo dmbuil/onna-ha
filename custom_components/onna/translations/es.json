@@ -52,7 +52,8 @@
         "menu_options": {
           "zone_picker": "Sensores por zona (temperatura externa / ventana)",
           "general": "Ajustes generales (histéresis, retardo de ventana)",
-          "presets": "Presets (temperaturas de Fuera / Eco / Dormir / Confort)"
+          "presets": "Presets (temperaturas de Fuera / Eco / Dormir / Confort)",
+          "smart": "Funciones inteligentes (corte estacional, amortiguado de inercia)"
         }
       },
       "presets": {
@@ -79,6 +80,17 @@
         "data_description": {
           "setpoint_hysteresis": "Cambio mínimo de la consigna compensada antes de escribir un nuevo valor en el bus KNX. Valores bajos siguen el sensor externo con más fidelidad pero generan más tráfico en el bus; valores altos reducen el tráfico a costa de precisión. Con 0,0 se escribe cada cambio. Por defecto: 0,5 °C.",
           "window_open_delay": "Tiempo que una ventana debe permanecer abierta antes de pausar el termostato de su zona. Las ventilaciones breves por debajo de este tiempo se ignoran. Por defecto: 600 segundos (10 minutos)."
+        }
+      },
+      "smart": {
+        "title": "Onna — funciones inteligentes",
+        "description": "El corte estacional pausa las zonas cuando el clima exterior hace inútil el modo frío/calor de la instalación. El amortiguado de inercia aprende la inercia de la losa de cada zona (requiere un sensor externo).",
+        "data": {
+          "outdoor_source": "Fuente exterior (entidad weather o sensor de temperatura)",
+          "heat_off_above": "Invierno: pausar si la media exterior supera (°C)",
+          "cool_off_below": "Verano: pausar si la media exterior baja de (°C)",
+          "coast_window_min": "Ventana de inercia del overshoot (min)",
+          "coast_settle_min": "Periodo de estabilización — demanda apagada este tiempo antes de muestrear (min)"
         }
       }
     },
