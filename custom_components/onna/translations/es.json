@@ -97,5 +97,12 @@
     "error": {
       "preset_heat_gt_cool": "En cada preset, la temperatura de calefacción debe ser menor o igual que la de refrigeración."
     }
+  },
+  "entity": {
+    "switch": {
+      "smart_thermostat": {
+        "name": "Termostato inteligente"
+      }
+    }
   }
 }

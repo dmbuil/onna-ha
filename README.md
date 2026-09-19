@@ -205,6 +205,27 @@ the box nothing changes: presets ship with sensible defaults, overshoot damping
 only acts on zones that have an external sensor, and seasonal gating stays
 inactive until an outdoor source is configured.
 
+### Global on/off switch
+
+The **Smart thermostat** switch (`switch.onna_smart_thermostat`) turns the smart
+layer off in one go, from a dashboard or an automation, without reloading the
+integration. With it off every zone behaves as a plain thermostat:
+
+| Feature                                     | Switch on | Switch off |
+| ------------------------------------------- | :-------: | :--------: |
+| Overshoot damping and coast learning        |    ✅     |     ❌     |
+| Seasonal gating                             |    ✅     |     ❌     |
+| Presets                                     |    ✅     |     ✅     |
+| External-sensor (probe-offset) compensation |    ✅     |     ✅     |
+| Window-open pause                           |    ✅     |     ✅     |
+
+* Flipping it re-writes each zone's setpoint straight away, so the damping
+  disappears (or returns) without waiting for the next temperature change.
+* Learned overshoot values are **kept**, so turning it back on resumes where it
+  left off. The outdoor EMA also keeps updating while it is off.
+* It defaults to **on** and remembers its position across restarts. It is an
+  HA-side setting, so it stays usable while Onna is offline.
+
 ### Presets
 
 Every zone exposes four presets — **Away**, **Eco**, **Sleep**, **Comfort** —

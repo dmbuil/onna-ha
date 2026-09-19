@@ -118,6 +118,7 @@ from .coordinator import (
     OnnaCoordinator,
     SIGNAL_ADDRESS_UPDATE,
     SIGNAL_SEASONAL_GATE,
+    SIGNAL_SMART_ENABLED,
 )
 from .entity import OnnaEntity
 from .overshoot import OvershootLearner
@@ -391,13 +392,18 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         ):
             offset = self._ext_temp - self._onna_temp
             compensated = self._target_temp - offset
-            if self._overshoot is not None:
+            if self._overshoot is not None and self._smart_enabled:
                 damp = self._overshoot.damping(self._winter)
                 compensated = compensated - damp if self._winter else compensated + damp
             return max(self._attr_min_temp, min(self._attr_max_temp, round(compensated, 1)))
         return self._target_temp
 
-    async def _push_compensated_setpoint(self) -> None:
+    @property
+    def _smart_enabled(self) -> bool:
+        """Global smart-thermostat toggle (off → no damping, no coast sampling)."""
+        return bool(self._coordinator.smart_enabled)
+
+    async def _push_compensated_setpoint(self, force: bool = False) -> None:
         """Write the compensated setpoint to the KNX bus, with hysteresis.
 
         The hysteresis (default 0.5 °C, configurable via the options flow)
@@ -409,6 +415,9 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         _last_written_setpoint is set to None by async_set_temperature to
         force an unconditional write when the user explicitly changes the
         target, bypassing the hysteresis check for that one update.
+
+        force=True bypasses the hysteresis too, but still never rewrites an
+        unchanged setpoint — used when the smart toggle adds or drops damping.
         """
         setpoint = self._compute_onna_setpoint()
         if setpoint is None:
@@ -417,7 +426,7 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         # setpoint must never be rewritten (delta 0 satisfies >= 0).
         if self._last_written_setpoint is None or (
             (delta := abs(setpoint - self._last_written_setpoint)) > 0
-            and delta >= self._setpoint_hysteresis
+            and (force or delta >= self._setpoint_hysteresis)
         ):
             self._last_written_setpoint = setpoint
             await self._coordinator.client.async_set_address_value(self._setpoint_w, setpoint)
@@ -592,6 +601,13 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
                 self.hass,
                 SIGNAL_SEASONAL_GATE,
                 self._handle_seasonal_gate,
+            )
+        )
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_SMART_ENABLED,
+                self._handle_smart_enabled,
             )
         )
         self._subscribe_connection_signal()
@@ -787,9 +803,23 @@ class OnnaClimate(OnnaEntity, ClimateEntity, RestoreEntity):
         self.async_write_ha_state()
 
     @callback
+    def _handle_smart_enabled(self, enabled: bool) -> None:
+        """React to the global smart-thermostat toggle.
+
+        Either way an in-flight coast sample is dropped: it straddles the
+        switch, so it measures neither the damped nor the plain behaviour.
+        Learned values are kept for when the layer is re-enabled.  The
+        setpoint is re-pushed so damping disappears (or returns) right away.
+        """
+        self._abort_overshoot_sample()
+        self.async_write_ha_state()
+        if self._target_temp is not None:
+            self.hass.async_create_task(self._push_compensated_setpoint(force=True))
+
+    @callback
     def _handle_demand(self, value: Any) -> None:
         new_demand = bool(value)
-        if self._overshoot is not None and self._ext_available:
+        if self._overshoot is not None and self._ext_available and self._smart_enabled:
             falling = self._demand and not new_demand
             rising = not self._demand and new_demand
             if falling and self._is_on and self._ext_temp is not None:

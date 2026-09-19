@@ -223,3 +223,74 @@ def test_seed_outdoor_ema_populates_synthetic_address():
     coord = OnnaCoordinator(MagicMock(), MagicMock())
     coord.seed_outdoor_ema(17.5, 100.0)
     assert coord.data["outdoor_ema"] == 17.5
+
+
+# ---------------------------------------------------------------------------
+# Smart-thermostat toggle
+# ---------------------------------------------------------------------------
+
+def test_smart_enabled_defaults_on():
+    coord = OnnaCoordinator(MagicMock(), MagicMock())
+    assert coord.smart_enabled is True
+
+
+def test_set_smart_enabled_dispatches_only_on_change():
+    from custom_components.onna import coordinator as coord_mod
+    from custom_components.onna.coordinator import SIGNAL_SMART_ENABLED
+
+    coord = OnnaCoordinator(MagicMock(), MagicMock())
+    with patch.object(coord_mod, "async_dispatcher_send") as send:
+        coord.set_smart_enabled(True)          # already on → no-op
+        send.assert_not_called()
+        coord.set_smart_enabled(False)
+    assert coord.smart_enabled is False
+    send.assert_any_call(coord.hass, SIGNAL_SMART_ENABLED, False)
+
+
+def test_smart_disabled_keeps_gate_closed_but_tracks_ema():
+    from custom_components.onna import coordinator as coord_mod
+
+    coord = OnnaCoordinator(MagicMock(), MagicMock())
+    coord.data["0_0_7"] = True
+    coord.configure_seasonal("weather.home", 20.0, 16.0)
+    coord.set_smart_enabled(False)
+    with patch.object(coord_mod, "async_dispatcher_send"):
+        coord._apply_reading(now=0.0, reading=25.0)   # would open the gate
+    assert coord.seasonal_gate_active is False
+    # The EMA and its monitoring sensor stay live for a prompt re-enable.
+    assert coord.data["outdoor_ema"] == 25.0
+
+
+def test_disabling_smart_closes_open_gate_and_reenabling_reopens_it():
+    from custom_components.onna import coordinator as coord_mod
+    from custom_components.onna.coordinator import SIGNAL_SEASONAL_GATE
+
+    coord = OnnaCoordinator(MagicMock(), MagicMock())
+    coord.data["0_0_7"] = True
+    coord.configure_seasonal("weather.home", 20.0, 16.0)
+    with patch.object(coord_mod, "async_dispatcher_send") as send:
+        coord._apply_reading(now=0.0, reading=25.0)
+        assert coord.seasonal_gate_active is True
+        send.reset_mock()
+        coord.set_smart_enabled(False)
+        assert coord.seasonal_gate_active is False
+        send.assert_any_call(coord.hass, SIGNAL_SEASONAL_GATE, False)
+        send.reset_mock()
+        coord.set_smart_enabled(True)
+        assert coord.seasonal_gate_active is True
+        send.assert_any_call(coord.hass, SIGNAL_SEASONAL_GATE, True)
+
+
+@pytest.mark.anyio
+async def test_start_seasonal_clears_restored_pauses_when_smart_disabled():
+    """Zones may restore a seasonal pause from before the toggle was switched
+    off; with no gate transition they would stay paused forever."""
+    from custom_components.onna import coordinator as coord_mod
+    from custom_components.onna.coordinator import SIGNAL_SEASONAL_GATE
+
+    coord = OnnaCoordinator(MagicMock(), MagicMock())
+    coord.configure_seasonal(None, 20.0, 16.0)
+    coord.set_smart_enabled(False)
+    with patch.object(coord_mod, "async_dispatcher_send") as send:
+        await coord.async_start_seasonal()
+    send.assert_called_once_with(coord.hass, SIGNAL_SEASONAL_GATE, False)
