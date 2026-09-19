@@ -1,7 +1,13 @@
-"""Switch platform for Onna — write-only KNX switches.
+"""Switch platform for Onna — write-only KNX switches plus the smart toggle.
 
-Currently covers a single switch:
+KNX switches (from device_config["switch_addresses"]):
   1_7_10 — Fancoil Salón Habilitar/Deshabilitar (DPT 1.001, write-only)
+
+Local switch (no KNX address):
+  Smart thermostat — global on/off for the smart-thermostat layer.  Off turns
+  every zone into a plain thermostat: no overshoot damping and no seasonal
+  gating.  Presets, probe-offset compensation and the window pause keep
+  working.  See OnnaSmartThermostatSwitch.
 
 Why write-only
 --------------
@@ -45,12 +51,13 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create one OnnaSwitch for every address in coordinator.device_config."""
+    """Create one OnnaSwitch per KNX switch address, plus the smart toggle."""
     coordinator: OnnaCoordinator = hass.data[DOMAIN][entry.entry_id]
-    entities = [
+    entities: list[SwitchEntity] = [
         OnnaSwitch(coordinator, address_id, info[0])
         for address_id, info in coordinator.device_config["switch_addresses"].items()
     ]
+    entities.append(OnnaSmartThermostatSwitch(coordinator))
     async_add_entities(entities)
 
 
@@ -100,4 +107,49 @@ class OnnaSwitch(OnnaEntity, SwitchEntity, RestoreEntity):
         """Disable the fancoil — Onna zeroes speed and closes the valve."""
         await self._coordinator.client.async_set_address_value(self._address_id, 0)
         self._is_on = False
+        self.async_write_ha_state()
+
+
+class OnnaSmartThermostatSwitch(OnnaEntity, SwitchEntity, RestoreEntity):
+    """Global on/off for the smart-thermostat layer — HA-side only.
+
+    The state lives in the coordinator (OnnaCoordinator.smart_enabled), which
+    closes the seasonal gate while off and tells every zone to drop overshoot
+    damping.  Nothing is written to the KNX bus.
+
+    Defaults to on so upgrading changes nothing; the last position is restored
+    across restarts.  Restoring happens during platform setup, before the
+    seasonal trackers start, so the gate never opens on a disabled layer.
+    """
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_translation_key = "smart_thermostat"
+    _attr_unique_id = "onna_smart_thermostat"
+    _attr_icon = "mdi:thermostat-auto"
+
+    def __init__(self, coordinator: OnnaCoordinator) -> None:
+        self._coordinator = coordinator
+
+    @property
+    def available(self) -> bool:
+        # A local setting: it must stay usable while Onna is offline.
+        return True
+
+    @property
+    def is_on(self) -> bool:
+        return self._coordinator.smart_enabled
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last position into the coordinator."""
+        if (last := await self.async_get_last_state()) is not None:
+            if last.state in ("on", "off"):
+                self._coordinator.set_smart_enabled(last.state == "on")
+
+    async def async_turn_on(self, **kwargs) -> None:
+        self._coordinator.set_smart_enabled(True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        self._coordinator.set_smart_enabled(False)
         self.async_write_ha_state()

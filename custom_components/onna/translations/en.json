@@ -97,5 +97,12 @@
     "error": {
       "preset_heat_gt_cool": "For every preset the heating temperature must be less than or equal to the cooling temperature."
     }
+  },
+  "entity": {
+    "switch": {
+      "smart_thermostat": {
+        "name": "Smart thermostat"
+      }
+    }
   }
 }

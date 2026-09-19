@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Smart thermostat switch** (`switch.onna_smart_thermostat`). It turns off
+  overshoot damping and seasonal gating across all zones at once, leaving plain
+  thermostats that keep presets, external-sensor compensation and the
+  window-open pause. Learned values are kept, and the switch position survives
+  restarts.
+
 ## [1.1.0] - 2026-07-22
 
 ### Added

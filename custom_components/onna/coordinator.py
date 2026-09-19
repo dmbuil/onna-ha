@@ -74,6 +74,9 @@ SIGNAL_CONNECTION = f"{DOMAIN}_connection_update"
 # Fired with a bool whenever the installation-wide seasonal gate opens/closes;
 # every zone entity listens and pauses/resumes exactly like the window pause.
 SIGNAL_SEASONAL_GATE = f"{DOMAIN}_seasonal_gate"
+# Fired with a bool when the user flips the global smart-thermostat switch.
+# Zones drop (or re-apply) overshoot damping and stop (or resume) sampling.
+SIGNAL_SMART_ENABLED = f"{DOMAIN}_smart_enabled"
 
 # Persistence of the last known KNX values (see the module docstring).
 STORAGE_VERSION = 1
@@ -126,6 +129,9 @@ class OnnaCoordinator:
         self._last_outdoor_reading: float | None = None
         # Cleanup handles for the live trackers wired in async_start_seasonal.
         self._seasonal_unsubs: list = []
+        # Global smart-thermostat toggle, owned by OnnaSmartThermostatSwitch.
+        # Off → plain thermostat: no overshoot damping and no seasonal gate.
+        self._smart_enabled: bool = True
         client.on_connection_change = self._handle_connection_change
 
     @property
@@ -226,6 +232,24 @@ class OnnaCoordinator:
     def seasonal_gate_active(self) -> bool:
         return self._gate_active
 
+    @property
+    def smart_enabled(self) -> bool:
+        return self._smart_enabled
+
+    @callback
+    def set_smart_enabled(self, enabled: bool) -> None:
+        """Turn the smart-thermostat layer on or off; dispatch only on a change.
+
+        The outdoor EMA keeps being tracked while disabled, so re-enabling
+        re-opens the seasonal gate straight away if the weather calls for it.
+        """
+        enabled = bool(enabled)
+        if enabled == self._smart_enabled:
+            return
+        self._smart_enabled = enabled
+        async_dispatcher_send(self.hass, SIGNAL_SMART_ENABLED, enabled)
+        self._reevaluate()
+
     def _apply_reading(self, now: float, reading: float) -> None:
         """Fold a new outdoor reading into the EMA and re-evaluate the gate."""
         self._last_outdoor_reading = reading
@@ -244,7 +268,7 @@ class OnnaCoordinator:
     def _reevaluate(self) -> None:
         """Recompute the gate; dispatch only on a change."""
         is_winter = bool(self.data.get("0_0_7", True))
-        new_gate = evaluate_gate(
+        new_gate = self._smart_enabled and evaluate_gate(
             is_winter,
             self._ema.value,
             self._heat_off_above,
@@ -273,6 +297,11 @@ class OnnaCoordinator:
 
     async def async_start_seasonal(self) -> None:
         """Wire the live outdoor trackers (called after entity setup)."""
+        if not self._smart_enabled:
+            # Zones may have restored a seasonal pause from before the toggle
+            # was switched off.  The gate is already closed, so no transition
+            # would ever reach them — release them explicitly.
+            async_dispatcher_send(self.hass, SIGNAL_SEASONAL_GATE, False)
         if not self._outdoor_entity:
             return
 

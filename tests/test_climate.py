@@ -18,6 +18,8 @@ def _make_coordinator(data=None):
     # A real coordinator defaults the seasonal gate off; the bare MagicMock would
     # otherwise return a truthy auto-attribute and seed zones as paused.
     coord.seasonal_gate_active = False
+    # Likewise the smart-thermostat toggle: real coordinators default it on.
+    coord.smart_enabled = True
     return coord
 
 
@@ -216,6 +218,115 @@ async def test_restore_learned_overshoot(monkeypatch):
     await zone.async_added_to_hass()
     assert zone._overshoot.learned_heat == 0.7
     assert zone._overshoot.learned_cool == 0.3
+
+
+# ---------------------------------------------------------------------------
+# Smart-thermostat toggle
+#
+# With the toggle off a zone is a plain thermostat: no overshoot damping and no
+# new coast samples.  Probe-offset compensation, presets and the window pause
+# keep working, and the learned values survive for when it is re-enabled.
+# ---------------------------------------------------------------------------
+
+def test_smart_disabled_drops_damping_but_keeps_compensation():
+    zone = _make_zone_ext({"0_0_7": True}, learned_heat=0.5)
+    zone._coordinator.smart_enabled = False
+    zone._target_temp = 22.0
+    zone._ext_temp = 21.0
+    zone._onna_temp = 20.0  # offset +1.0
+    assert zone._compute_onna_setpoint() == 21.0
+
+
+def test_smart_disabled_opens_no_coast_sample():
+    zone = _make_zone_ext({"1_0_1": True, "1_0_7": True, "0_0_7": True})
+    zone._coordinator.smart_enabled = False
+    zone._is_on = True
+    zone._demand = True
+    zone._ext_temp = 21.0
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    with patch(
+        "custom_components.onna.climate.async_call_later", return_value=MagicMock()
+    ) as call_later:
+        zone._handle_demand(False)  # falling edge
+    call_later.assert_not_called()
+    assert zone._coast_settle_timer is None
+    assert zone._demand is False
+
+
+def test_smart_toggle_off_aborts_sample_and_keeps_learning():
+    zone = _make_zone_ext({"0_0_7": True}, learned_heat=0.5)
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    settle_cancel = MagicMock()
+    zone._coast_settle_timer = settle_cancel
+    zone._pending_start_temp = 21.0
+    zone._coordinator.smart_enabled = False
+    zone._handle_smart_enabled(False)
+    settle_cancel.assert_called_once()
+    assert zone._coast_settle_timer is None
+    assert zone._pending_start_temp is None
+    assert zone._overshoot.learned_heat == 0.5
+
+
+@pytest.mark.anyio
+async def test_smart_toggle_rewrites_setpoint_below_hysteresis():
+    """Dropping 0.3 °C of damping is below the 0.5 °C hysteresis, but the
+    toggle is an explicit user action — the new setpoint must be written."""
+    zone = _make_zone_ext({"0_0_7": True}, learned_heat=0.3)
+    zone.async_write_ha_state = MagicMock()
+    zone._target_temp = 22.0
+    zone._ext_temp = 20.0
+    zone._onna_temp = 20.0
+    zone._last_written_setpoint = 21.7   # damped value written earlier
+    zone._coordinator.smart_enabled = False
+    await zone._push_compensated_setpoint(force=True)
+    zone._coordinator.client.async_set_address_value.assert_called_once_with(
+        "1_0_2", 22.0
+    )
+
+
+@pytest.mark.anyio
+async def test_forced_push_skips_identical_setpoint():
+    """Force bypasses the hysteresis, never the no-op check: a restart with the
+    toggle already off must not rewrite an unchanged setpoint."""
+    zone = _make_zone_ext({"0_0_7": True}, learned_heat=0.3)
+    zone._target_temp = 22.0
+    zone._ext_temp = 20.0
+    zone._onna_temp = 20.0
+    zone._last_written_setpoint = 22.0
+    zone._coordinator.smart_enabled = False
+    await zone._push_compensated_setpoint(force=True)
+    zone._coordinator.client.async_set_address_value.assert_not_called()
+
+
+def test_smart_toggle_schedules_forced_push():
+    zone = _make_zone_ext({"0_0_7": True}, learned_heat=0.5)
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+    zone._target_temp = 22.0
+    with patch.object(zone, "_push_compensated_setpoint", MagicMock()) as push:
+        zone._handle_smart_enabled(False)
+    push.assert_called_once_with(force=True)
+    zone.hass.async_create_task.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_zone_subscribes_to_smart_toggle_signal(monkeypatch):
+    from custom_components.onna.coordinator import SIGNAL_SMART_ENABLED
+
+    zone = _make_zone({"0_0_7": True})
+    zone.hass = MagicMock()
+    zone.hass.states.get = MagicMock(return_value=None)
+    zone.async_on_remove = MagicMock()
+    zone.async_get_last_state = AsyncMock(return_value=None)
+    connect = MagicMock(return_value=MagicMock())
+    monkeypatch.setattr(
+        "custom_components.onna.climate.async_dispatcher_connect", connect
+    )
+    await zone.async_added_to_hass()
+    signals = [c.args[1] for c in connect.call_args_list]
+    assert SIGNAL_SMART_ENABLED in signals
 
 
 def test_seasonal_gate_open_pauses_running_zone():
@@ -539,9 +650,9 @@ def test_climate_unique_id_uses_onoff_state_addr():
 
 
 @pytest.mark.anyio
-async def test_async_added_connects_six_signals():
+async def test_async_added_connects_seven_signals():
     # Five per-address signals (temp, setpoint, on/off, demand, winter) plus the
-    # installation-wide seasonal-gate signal.
+    # installation-wide seasonal-gate and smart-toggle signals.
     zone = _make_zone()
     zone.hass = MagicMock()
     zone.async_on_remove = MagicMock()
@@ -550,7 +661,7 @@ async def test_async_added_connects_six_signals():
         return_value=lambda: None,
     ) as mock_connect:
         await zone.async_added_to_hass()
-    assert mock_connect.call_count == 6
+    assert mock_connect.call_count == 7
 
 
 
@@ -1215,6 +1326,20 @@ def test_window_change_close_cancels_timer():
 
 def test_window_delay_elapsed_pauses_when_on():
     zone = _make_zone_with_window({"1_2_1": True})
+    zone._is_on = True
+    zone._window_open = True
+    zone.hass = MagicMock()
+    zone.async_write_ha_state = MagicMock()
+
+    zone._handle_window_delay_elapsed(None)
+
+    assert zone._window_pause_active is True
+    zone.hass.async_create_task.assert_called_once()
+
+
+def test_window_pause_still_works_with_smart_disabled():
+    zone = _make_zone_with_window({"1_2_1": True})
+    zone._coordinator.smart_enabled = False
     zone._is_on = True
     zone._window_open = True
     zone.hass = MagicMock()
