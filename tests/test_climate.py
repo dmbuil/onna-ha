@@ -1013,6 +1013,28 @@ async def test_general_restores_hvac_mode_and_temperature():
     assert general.target_temperature == 19.0
 
 
+@pytest.mark.anyio
+async def test_general_reports_cooling_after_restart_without_new_telegrams():
+    """The bug: 0_0_7 only pushes when the season flips, so after a restart no
+    telegram ever arrives and the entity fell back to its winter default —
+    reporting `heating` in August.  The persisted value must cover the gap."""
+    from custom_components.onna.coordinator import OnnaCoordinator
+    from custom_components.onna.climate import HVACAction, HVACMode
+
+    client = MagicMock()
+    client.connected = True
+    client.on_connection_change = None
+    coord = OnnaCoordinator(MagicMock(), client, entry_id="abc123")
+    coord._store.saved = {"0_0_7": 0}          # summer, as last seen
+
+    await coord.async_restore_data()
+    coord.register_address("0_0_7")
+    general = OnnaGeneralClimate(coord)
+    general._hvac_mode = HVACMode.COOL          # as restored by RestoreEntity
+
+    assert general.hvac_action == HVACAction.COOLING
+
+
 def test_general_handle_winter_updates_action():
     from custom_components.onna.climate import HVACAction, HVACMode
     coord = _make_coordinator({"0_0_7": True})

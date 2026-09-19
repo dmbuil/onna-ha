@@ -45,6 +45,7 @@ async def test_setup_entry_stores_coordinator_in_hass_data():
     mock_coord = MagicMock()
     mock_coord.async_start = AsyncMock()
     mock_coord.async_start_seasonal = AsyncMock()
+    mock_coord.async_restore_data = AsyncMock()
 
     with patch("custom_components.onna.OnnaClient"), \
          patch("custom_components.onna.OnnaCoordinator", return_value=mock_coord), \
@@ -62,6 +63,40 @@ async def test_setup_entry_stores_coordinator_in_hass_data():
 
 
 @pytest.mark.anyio
+async def test_setup_entry_restores_state_before_building_entities():
+    """Entities seed from coordinator.data in __init__, so the persisted values
+    have to be back in place before the platforms are forwarded — otherwise
+    every address the device never re-announces falls back to its default."""
+    from custom_components.onna import async_setup_entry
+
+    hass = _make_hass()
+    entry = _make_entry()
+
+    calls: list[str] = []
+    mock_coord = MagicMock()
+    mock_coord.async_start = AsyncMock()
+    mock_coord.async_start_seasonal = AsyncMock()
+    mock_coord.async_restore_data = AsyncMock(
+        side_effect=lambda: calls.append("restore")
+    )
+
+    with patch("custom_components.onna.OnnaClient"), \
+         patch("custom_components.onna.OnnaCoordinator", return_value=mock_coord) as coord_cls, \
+         patch.object(hass, "config_entries", create=True):
+
+        hass.config_entries = MagicMock()
+        hass.config_entries.async_forward_entry_setups = AsyncMock(
+            side_effect=lambda *a, **kw: calls.append("forward")
+        )
+
+        await async_setup_entry(hass, entry)
+
+    assert calls == ["restore", "forward"]
+    # The store is keyed by entry_id, never by the onna_id credential.
+    assert coord_cls.call_args.kwargs["entry_id"] == entry.entry_id
+
+
+@pytest.mark.anyio
 async def test_setup_entry_forwards_to_sensor_and_binary_sensor_platforms():
     from custom_components.onna import async_setup_entry
 
@@ -71,6 +106,7 @@ async def test_setup_entry_forwards_to_sensor_and_binary_sensor_platforms():
     mock_coord = MagicMock()
     mock_coord.async_start = AsyncMock()
     mock_coord.async_start_seasonal = AsyncMock()
+    mock_coord.async_restore_data = AsyncMock()
 
     with patch("custom_components.onna.OnnaClient"), \
          patch("custom_components.onna.OnnaCoordinator", return_value=mock_coord):
@@ -102,6 +138,7 @@ async def test_unload_entry_stops_coordinator_and_removes_data():
     mock_coord = MagicMock()
     mock_coord.async_start = AsyncMock()
     mock_coord.async_start_seasonal = AsyncMock()
+    mock_coord.async_restore_data = AsyncMock()
     mock_coord.async_stop = AsyncMock()
 
     with patch("custom_components.onna.OnnaClient"), \
@@ -253,6 +290,7 @@ async def test_setup_entry_registers_update_listener():
     mock_coord = MagicMock()
     mock_coord.async_start = AsyncMock()
     mock_coord.async_start_seasonal = AsyncMock()
+    mock_coord.async_restore_data = AsyncMock()
 
     with patch("custom_components.onna.OnnaClient"), \
          patch("custom_components.onna.OnnaCoordinator", return_value=mock_coord):

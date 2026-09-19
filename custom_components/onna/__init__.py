@@ -115,10 +115,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         host=entry.data[CONF_HOST],
         onna_id=entry.data[CONF_ONNA_ID],
     )
-    coordinator = OnnaCoordinator(hass, client)
+    coordinator = OnnaCoordinator(hass, client, entry_id=entry.entry_id)
     coordinator.device_config = entry.data["device_config"]
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
+    # Onna only announces changes, so the last known value of every address has
+    # to come back from storage before any entity reads coordinator.data.
+    await coordinator.async_restore_data()
     await coordinator.async_start()
     coordinator.configure_seasonal(
         entry.options.get(OPT_OUTDOOR_SOURCE),

@@ -134,6 +134,34 @@ class _RestoreEntity:
 
 restore_mod.RestoreEntity = _RestoreEntity
 
+# ---- homeassistant.helpers.storage ----
+# Minimal stand-in for HA's Store: async_load returns whatever was last saved,
+# and async_delay_save records the callback without running a timer.  Real HA
+# also flushes a delayed save on EVENT_HOMEASSISTANT_FINAL_WRITE.
+storage_mod = _make_module("homeassistant.helpers.storage")
+
+
+class _Store:
+    def __init__(self, hass, version, key, **kwargs):
+        self.hass = hass
+        self.version = version
+        self.key = key
+        self.saved = None
+        self.delay_saves = []
+
+    async def async_load(self):
+        return self.saved
+
+    def async_delay_save(self, data_func, delay=0):
+        self.delay_saves.append((data_func, delay))
+        self.saved = data_func()
+
+    async def async_save(self, data):
+        self.saved = data
+
+
+storage_mod.Store = _Store
+
 # ---- homeassistant.components.sensor ----
 _make_module("homeassistant.components")
 sensor_mod = _make_module("homeassistant.components.sensor")

@@ -221,4 +221,10 @@ Zonas: `0`=Persiana 1 Salón, `1`=Persiana 2 Salón, `2`=Dormitorio 1, `3`=Dormi
 - **Conexión**: WebSocket a `ws://192.168.10.3:4001/socket.io/` con query `{EIO: 3, transport: websocket, onnaId: <ID>}`
 - **Estado**: suscribir a `SET_ADDRESS_VALUE_FROM_SERVER` → actualizar entidades HA por `id`
 - **Control**: emitir `SET_ADDRESS_VALUE` con `{id, value}` *(pendiente verificar nombre exacto)*
-- **Arranque**: emitir `READ_CONFIGURATION` en `on_connect` para cargar estado inicial de todas las direcciones
+- **Arranque**: emitir `READ_CONFIGURATION` en `on_connect` para descubrir las direcciones.
+  ⚠️ **No carga estado**: el ack 431 no contiene ni un solo campo `value` (verificado contra
+  `04-read-configuration.json`), y el equipo tampoco emite ninguna ráfaga de valores al
+  conectarse un cliente — `readOnInit` describe lo que el servidor Onna lee del bus KNX
+  cuando arranca **él**, no lo que envía al cliente. No existe evento de lectura conocido:
+  el estado actual de una dirección solo se conoce si cambia mientras HA está conectado,
+  por lo que HA debe persistirlo (ver `OnnaCoordinator.async_restore_data`).

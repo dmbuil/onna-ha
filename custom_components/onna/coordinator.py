@@ -10,16 +10,24 @@ DataUpdateCoordinator.
 ``coordinator.data`` is a plain dict keyed by KNX address string (e.g.
 ``"1_0_4"``).  It is populated in two ways:
 
-  1. Before entity setup — OnnaClient.INIT_COLLECT_S seconds after
-     READ_CONFIGURATION is sent, initial_ready fires and async_start() returns.
-     By that time coordinator.data already contains all values pushed by Onna
-     on connect (current temperatures, setpoints, alarms, etc.).  Entities read
-     coordinator.data in their __init__ so they start in the known state.
+  1. Before entity setup — async_restore_data() loads the last known value of
+     every KNX address from HA storage.  This is not an optimisation: Onna
+     announces *changes* only.  There is no protocol event to read an address's
+     current value, and the READ_CONFIGURATION ack carries metadata (address
+     names, types, links) without a single value.  So an address that does not
+     change is invisible to HA forever after a restart — 0_0_7 (winter/summer)
+     flips twice a year, and until it does every entity would silently use its
+     constructor default.  Entities read coordinator.data in their __init__,
+     so the restore has to happen before async_forward_entry_setups.
 
   2. After entity setup — live KNX pushes call _on_update, which updates
-     coordinator.data AND fires an HA dispatcher signal.  Each entity
-     subscribes to its address signals in async_added_to_hass and calls
-     async_write_ha_state on each update.
+     coordinator.data, persists the new snapshot AND fires an HA dispatcher
+     signal.  Each entity subscribes to its address signals in
+     async_added_to_hass and calls async_write_ha_state on each update.
+
+The stored snapshot is inevitably stale if the installation changes while HA is
+down; it is corrected by the first telegram after reconnect.  That is strictly
+better than the alternative, which is defaulting blind.
 
 Signal names follow the pattern ``onna_address_update_{address_id}`` and are
 used exclusively between the coordinator and entity listeners.
@@ -28,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from datetime import timedelta
 from typing import Any
@@ -41,6 +50,7 @@ from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_interval,
 )
+from homeassistant.helpers.storage import Store
 
 from .client import OnnaClient
 from .const import (
@@ -65,6 +75,17 @@ SIGNAL_CONNECTION = f"{DOMAIN}_connection_update"
 # every zone entity listens and pauses/resumes exactly like the window pause.
 SIGNAL_SEASONAL_GATE = f"{DOMAIN}_seasonal_gate"
 
+# Persistence of the last known KNX values (see the module docstring).
+STORAGE_VERSION = 1
+# Debounce: telegrams for a busy address (0_5_3 power) arrive continuously, and
+# the snapshot only has to survive a restart, not every write.
+SNAPSHOT_SAVE_DELAY_S = 30
+
+# coordinator.data also holds synthetic keys (outdoor_ema, overshoot_*,
+# cfg_internal_offset).  Those are owned by other restore paths — entity
+# attributes — so persisting them here would create a competing source of truth.
+_KNX_ADDRESS_RE = re.compile(r"^\d+_\d+_\d+$")
+
 
 class OnnaCoordinator:
     """Manages a single OnnaClient connection and dispatches HA signals.
@@ -74,9 +95,18 @@ class OnnaCoordinator:
     dispatcher signal pipeline for that address.
     """
 
-    def __init__(self, hass: HomeAssistant, client: OnnaClient) -> None:
+    def __init__(
+        self, hass: HomeAssistant, client: OnnaClient, entry_id: str | None = None
+    ) -> None:
         self.hass   = hass
         self.client = client
+        # One store per config entry.  entry_id (not onna_id) keys the file:
+        # the Onna ID is a credential and must not end up in a filename.
+        self._store: Store | None = (
+            Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}")
+            if entry_id is not None
+            else None
+        )
         # Latest value for every registered KNX address; entities seed from here.
         self.data: dict[str, Any] = {}
         # Entity address maps derived from the device's READ_CONFIGURATION payload.
@@ -114,6 +144,39 @@ class OnnaCoordinator:
         """Return the HA dispatcher signal name for a KNX address."""
         return SIGNAL_ADDRESS_UPDATE.format(address_id=address_id)
 
+    def _snapshot(self) -> dict[str, Any]:
+        """The subset of coordinator.data worth persisting (KNX values only)."""
+        return {
+            addr: value
+            for addr, value in self.data.items()
+            if _KNX_ADDRESS_RE.match(addr)
+        }
+
+    def _persist(self) -> None:
+        """Queue a debounced write of the current snapshot.
+
+        Store flushes any pending delayed save on EVENT_HOMEASSISTANT_FINAL_WRITE,
+        so a restart never loses more than the values that changed in-flight.
+        """
+        if self._store is not None:
+            self._store.async_delay_save(self._snapshot, SNAPSHOT_SAVE_DELAY_S)
+
+    async def async_restore_data(self) -> None:
+        """Load the last known KNX values into coordinator.data.
+
+        Must run before async_forward_entry_setups: entities read
+        coordinator.data in their __init__, and anything missing there silently
+        becomes a constructor default.
+        """
+        if self._store is None:
+            return
+        stored = await self._store.async_load()
+        if not stored:
+            return
+        # Restored values lose to anything already live from this session.
+        for addr, value in stored.items():
+            self.data.setdefault(addr, value)
+
     def register_address(self, address_id: str) -> None:
         """Wire address_id into the coordinator pipeline (idempotent).
 
@@ -132,6 +195,7 @@ class OnnaCoordinator:
 
         async def _on_update(value: Any) -> None:
             self.data[address_id] = value
+            self._persist()
             async_dispatcher_send(self.hass, self._make_signal(address_id), value)
 
         self.client.register_address_callback(address_id, _on_update)
@@ -300,6 +364,10 @@ class OnnaCoordinator:
 
     async def async_stop(self) -> None:
         """Cancel the background connection task and clean up."""
+        if self._store is not None:
+            # An options change reloads the entry and throws this coordinator
+            # away; flush now rather than leaving the delayed save to expire.
+            await self._store.async_save(self._snapshot())
         for unsub in self._seasonal_unsubs:
             unsub()
         self._seasonal_unsubs = []

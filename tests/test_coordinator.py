@@ -50,6 +50,75 @@ async def test_async_stop_shuts_down_client():
 
 
 # ---------------------------------------------------------------------------
+# State persistence
+#
+# Onna only announces *changes*: there is no way to read an address's current
+# value, and the READ_CONFIGURATION ack carries metadata only.  So an address
+# that does not change — 0_0_7 flips twice a year — is invisible to HA after a
+# restart, and entities silently fall back to their constructor defaults.  HA
+# has to remember the last known value itself.
+# ---------------------------------------------------------------------------
+
+def _make_persisting_coordinator(stored=None):
+    hass = MagicMock()
+    client = MagicMock()
+    client.connected = False
+    client.on_connection_change = None
+    coord = OnnaCoordinator(hass, client, entry_id="abc123")
+    coord._store.saved = stored
+    return coord
+
+
+@pytest.mark.anyio
+async def test_restores_persisted_addresses_before_entities_are_built():
+    coord = _make_persisting_coordinator({"0_0_7": 0, "1_0_3": 21.5})
+    await coord.async_restore_data()
+    assert coord.data["0_0_7"] == 0
+    assert coord.data["1_0_3"] == 21.5
+
+
+@pytest.mark.anyio
+async def test_restore_tolerates_empty_store():
+    coord = _make_persisting_coordinator(None)
+    await coord.async_restore_data()
+    assert coord.data == {}
+
+
+@pytest.mark.anyio
+async def test_live_push_is_persisted():
+    coord = _make_persisting_coordinator()
+    coord.register_address("0_0_7")
+    on_update = coord.client.register_address_callback.call_args.args[1]
+    await on_update(1)
+    assert coord._store.saved == {"0_0_7": 1}
+
+
+@pytest.mark.anyio
+async def test_async_stop_flushes_pending_snapshot():
+    """An options change reloads the entry and discards the coordinator; without
+    an explicit flush the next setup would read a snapshot up to 30 s stale."""
+    coord = _make_persisting_coordinator()
+    coord.client.async_shutdown = AsyncMock()
+    coord.data["0_0_7"] = 0
+    await coord.async_stop()
+    assert coord._store.saved == {"0_0_7": 0}
+
+
+@pytest.mark.anyio
+async def test_only_knx_addresses_are_persisted():
+    """Synthetic keys are owned by other restore paths (entity attributes) —
+    persisting them here would create a second, competing source of truth."""
+    coord = _make_persisting_coordinator()
+    coord.data.update({
+        "0_0_7": 0,
+        "outdoor_ema": 33.3,
+        "overshoot_1_0_1": 0.4,
+        "cfg_internal_offset": -0.4,
+    })
+    assert coord._snapshot() == {"0_0_7": 0}
+
+
+# ---------------------------------------------------------------------------
 # Seasonal gating
 # ---------------------------------------------------------------------------
 
